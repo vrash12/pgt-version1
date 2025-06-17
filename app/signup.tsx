@@ -1,16 +1,16 @@
 // app/signup.tsx
 import React, { useState } from 'react';
 import {
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
 import { useRouter } from 'expo-router';
@@ -25,11 +25,31 @@ export default function SignUpScreen() {
   const [agreed, setAgreed] = useState(false);
   const router = useRouter();
 
-  const handleSignUp = () => {
-    // TODO: add sign-up logic here
-    console.log({ firstName, lastName, username, phoneNumber, password, confirmPassword, agreed });
-    router.push('/');
-  };
+const handleSignUp = async () => {
+  try {
+    const response = await fetch('http://127.0.0.1:5000/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        firstName,
+        lastName,
+        username,
+        phoneNumber,
+        password,
+      }),
+    });
+
+    const json = await response.json();
+    if (response.ok) {
+      console.log('User registered successfully:', json.message);
+      router.push('/');
+    } else {
+      console.error('Error:', json.error);
+    }
+  } catch (error) {
+    console.error('Network error:', error);
+  }
+};
 
   return (
     <SafeAreaView style={styles.container}>
