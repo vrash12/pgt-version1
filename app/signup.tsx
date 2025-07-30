@@ -1,6 +1,10 @@
 // app/signup.tsx
-import React, { useState } from 'react';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -9,144 +13,255 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TextInputProps,
   TouchableOpacity,
   View,
 } from 'react-native';
 
-import { useRouter } from 'expo-router';
-
 export default function SignUpScreen() {
-  const [firstName, setFirstName] = useState('');
-  const [lastName, setLastName] = useState('');
-  const [username, setUsername] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [password, setPassword] = useState('');
+  const [firstName,       setFirstName]       = useState('');
+  const [lastName,        setLastName]        = useState('');
+  const [username,        setUsername]        = useState('');
+  const [phoneNumber,     setPhoneNumber]     = useState('');
+  const [password,        setPassword]        = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [agreed, setAgreed] = useState(false);
+  const [agreed,          setAgreed]          = useState(false);
+  const [showPassword,    setShowPassword]    = useState(false);
+  const [showConfPass,    setShowConfPass]    = useState(false);
+
   const router = useRouter();
 
-const handleSignUp = async () => {
-  try {
-    const response = await fetch('http://127.0.0.1:5000/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        firstName,
-        lastName,
-        username,
-        phoneNumber,
-        password,
-      }),
-    });
+  // header animations
+  const fadeAnim  = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(50)).current;
+  const bubble1   = useRef(new Animated.Value(0)).current;
+  const bubble2   = useRef(new Animated.Value(0)).current;
 
-    const json = await response.json();
-    if (response.ok) {
-      console.log('User registered successfully:', json.message);
-      router.push('/');
-    } else {
-      console.error('Error:', json.error);
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim,  { toValue: 1, duration: 800, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 600, useNativeDriver: true }),
+    ]).start();
+
+    const float = (val: Animated.Value, delay = 0) =>
+      Animated.loop(Animated.sequence([
+        Animated.timing(val, { toValue: 1, duration: 8000, delay, useNativeDriver: true }),
+        Animated.timing(val, { toValue: 0, duration: 8000, useNativeDriver: true }),
+      ])).start();
+    float(bubble1);
+    float(bubble2, 4000);
+  }, []);
+
+  const handleSignUp = async () => {
+    if (!agreed) return;
+    try {
+      const res = await fetch('http://127.0.0.1:5000/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firstName, lastName, username, phoneNumber, password }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        alert('Account created! Please sign in.');
+        router.replace('/signin');
+      } else {
+        alert(json.error || 'Signup failed');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Network error');
     }
-  } catch (error) {
-    console.error('Network error:', error);
-  }
-};
+  };
+
+  // small helper type
+  type FI = {
+    label: string;
+    icon:  TextInputProps['keyboardType']; // actually unused, but TS-safe
+    placeholder: string;
+    value: string;
+    setter: (s: string) => void;
+    keyboardType?: TextInputProps['keyboardType'];
+    autoCapitalize?: TextInputProps['autoCapitalize'];
+  };
+
+  const otherFields: FI[] = [
+    {
+      label: 'Username',
+      icon:  'default',
+      placeholder: 'johndoe123',
+      value: username,
+      setter: setUsername,
+      autoCapitalize: 'none',
+    },
+    {
+      label: 'Phone Number',
+      icon:  'phone-pad',
+      placeholder: '+63 912 345 6789',
+      value: phoneNumber,
+      setter: setPhoneNumber,
+      keyboardType: 'phone-pad',
+    },
+  ];
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.subtitle}>Create Your Account!</Text>
-        <Text style={styles.title}>Sign Up</Text>
-      </View>
+      {/* HEADER */}
+      <LinearGradient colors={['#4A7C59', '#2D5016']} style={styles.header}>
+        <Animated.View style={[styles.headerContent, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          <View style={styles.logoContainer}>
+            <View style={styles.logoCircle}>
+              <MaterialIcons name="directions-bus" size={32} color="#4CAF50" />
+            </View>
+            <Text style={styles.appName}>PGT Onboard</Text>
+          </View>
+          <Text style={styles.subtitle}>Join the community!</Text>
+          <Text style={styles.title}>Create Account</Text>
+        </Animated.View>
 
+        {/* Floating bubbles */}
+        <Animated.View
+          style={[
+            styles.bubble, styles.bubble1Pos,
+            {
+              transform: [
+                { translateY: bubble1.interpolate({ inputRange: [0,1], outputRange: [0,-20] }) },
+                { translateX: bubble1.interpolate({ inputRange: [0,1], outputRange: [0,15] }) },
+                { scale:      bubble1.interpolate({ inputRange: [0,0.5,1], outputRange: [1,1.08,1] }) },
+              ],
+            },
+          ]}
+        />
+        <Animated.View
+          style={[
+            styles.bubble, styles.bubble2Pos,
+            {
+              transform: [
+                { translateY: bubble2.interpolate({ inputRange: [0,1], outputRange: [0,20] }) },
+                { translateX: bubble2.interpolate({ inputRange: [0,1], outputRange: [0,-15] }) },
+                { scale:      bubble2.interpolate({ inputRange: [0,0.5,1], outputRange: [1,1.05,1] }) },
+              ],
+            },
+          ]}
+        />
+
+        {/* curve */}
+        <View style={styles.headerCurve} />
+      </LinearGradient>
+
+      {/* FORM */}
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.formContainer}
       >
-        <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
+          {/* Names row */}
           <View style={styles.row}>
-            <View style={[styles.inputWrapper, { marginRight: 10 }]}>  
+            <View style={[styles.inputWrapper, { marginRight: 8 }]}>
               <Text style={styles.label}>First Name</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter First Name"
-                placeholderTextColor="#555"
-                value={firstName}
-                onChangeText={setFirstName}
-              />
+              <View style={styles.inputContainer}>
+                <Ionicons name="person-outline" size={20} color="#666" style={styles.icon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="John"
+                  placeholderTextColor="#999"
+                  value={firstName}
+                  onChangeText={setFirstName}
+                />
+              </View>
             </View>
-            <View style={styles.inputWrapper}>
+            <View style={[styles.inputWrapper, { marginLeft: 8 }]}>
               <Text style={styles.label}>Last Name</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter Last Name"
-                placeholderTextColor="#555"
-                value={lastName}
-                onChangeText={setLastName}
-              />
+              <View style={styles.inputContainer}>
+                <Ionicons name="person-outline" size={20} color="#666" style={styles.icon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Doe"
+                  placeholderTextColor="#999"
+                  value={lastName}
+                  onChangeText={setLastName}
+                />
+              </View>
             </View>
           </View>
 
-          <View style={styles.field}>
-            <Text style={styles.label}>Username</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter Username"
-              placeholderTextColor="#555"
-              value={username}
-              onChangeText={setUsername}
-            />
-          </View>
+          {/* Other fields */}
+          {otherFields.map((f, i) => (
+            <View key={i} style={styles.field}>
+              <Text style={styles.label}>{f.label}</Text>
+              <View style={styles.inputContainer}>
+                <Ionicons name="at-outline" size={20} color="#666" style={styles.icon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder={f.placeholder}
+                  placeholderTextColor="#999"
+                  value={f.value}
+                  onChangeText={f.setter}
+                  keyboardType={f.keyboardType}
+                  autoCapitalize={f.autoCapitalize}
+                />
+              </View>
+            </View>
+          ))}
 
-          <View style={styles.field}>
-            <Text style={styles.label}>Phone Number</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter Phone Number"
-              placeholderTextColor="#555"
-              value={phoneNumber}
-              onChangeText={setPhoneNumber}
-              keyboardType="phone-pad"
-            />
-          </View>
+          {/* Password fields */}
+          {[
+            { label: 'Password',        val: password,        set: setPassword,        show: showPassword,   toggle: setShowPassword },
+            { label: 'Confirm Password', val: confirmPassword, set: setConfirmPassword, show: showConfPass, toggle: setShowConfPass },
+          ].map((p, i) => (
+            <View key={i} style={styles.field}>
+              <Text style={styles.label}>{p.label}</Text>
+              <View style={styles.inputContainer}>
+                <Ionicons name="lock-closed-outline" size={20} color="#666" style={styles.icon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="••••••••"
+                  placeholderTextColor="#999"
+                  secureTextEntry={!p.show}
+                  value={p.val}
+                  onChangeText={p.set}
+                />
+                <TouchableOpacity style={styles.eye} onPress={() => p.toggle(!p.show)}>
+                  <Ionicons name={p.show ? 'eye-outline' : 'eye-off-outline'} size={20} color="#666" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
 
-          <View style={styles.field}>
-            <Text style={styles.label}>Password</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter Password"
-              placeholderTextColor="#555"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-            />
-          </View>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>Confirm Password</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Confirm Password"
-              placeholderTextColor="#555"
-              value={confirmPassword}
-              onChangeText={setConfirmPassword}
-              secureTextEntry
-            />
-          </View>
-
-          <Pressable style={styles.checkboxContainer} onPress={() => setAgreed(!agreed)}>
-            <View style={[styles.checkbox, agreed && styles.checkboxChecked]} />
-            <Text style={styles.checkboxLabel}>
-              By checking this box, you are agreeing to our Terms of Service.
+          {/* Terms checkbox */}
+          <Pressable style={styles.checkWrap} onPress={() => setAgreed(!agreed)}>
+            <View style={[styles.checkbox, agreed && styles.checkboxOn]}>
+              {agreed && <Ionicons name="checkmark" size={14} color="#fff" />}
+            </View>
+            <Text style={styles.checkLabel}>
+              I agree to the{' '}
+              <Text style={styles.link}>Terms of Service</Text> and{' '}
+              <Text style={styles.link}>Privacy Policy</Text>
             </Text>
           </Pressable>
 
+          {/* Create Account */}
           <TouchableOpacity
-            style={[styles.button, !agreed && styles.buttonDisabled]}
-            onPress={handleSignUp}
+            style={[styles.btn, !agreed && styles.btnDisabled]}
             disabled={!agreed}
+            onPress={handleSignUp}
           >
-            <Text style={styles.buttonText}>Sign Up</Text>
+            <LinearGradient
+              colors={agreed ? ['#4A7C59','#2D5016'] : ['#D1D5DB','#9CA3AF']}
+              style={styles.btnGrad}
+            >
+              <Text style={[styles.btnTxt, !agreed && styles.btnTxtDis]}>
+                Create Account
+              </Text>
+            </LinearGradient>
           </TouchableOpacity>
+
+          {/* Sign In Link */}
+          <View style={styles.signInRow}>
+            <Text style={styles.signInTxt}>Already have an account? </Text>
+            <TouchableOpacity onPress={() => router.push('/signin')}>
+              <Text style={styles.signInLink}>Sign In</Text>
+            </TouchableOpacity>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -154,46 +269,84 @@ const handleSignUp = async () => {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  header: {
-    backgroundColor: '#264d00',
-    paddingBottom: 40,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    borderBottomRightRadius: 80,
+  container:       { flex:1, backgroundColor:'#f8f9fa' },
+  header:          { paddingTop:20, paddingHorizontal:20, position:'relative' },
+  headerContent:   { paddingBottom:40 },
+  logoContainer:   { alignItems:'center', marginBottom:20 },
+  logoCircle:      { width:60,height:60,borderRadius:30,backgroundColor:'#fff',alignItems:'center',justifyContent:'center',marginBottom:8, elevation:3 },
+  appName:         { color:'#fff', fontSize:18, fontWeight:'600' },
+  subtitle:        { color:'rgba(255,255,255,0.9)', fontSize:16, textAlign:'center', marginBottom:4 },
+  title:           { color:'#fff', fontSize:28, fontWeight:'bold', textAlign:'center' },
+  headerCurve:     { position:'absolute', bottom:-1,left:0,right:0,height:30, backgroundColor:'#f8f9fa', borderTopLeftRadius:30, borderTopRightRadius:30 },
+  bubble:          { position:'absolute', width:90,height:90, borderRadius:45, backgroundColor:'rgba(255,255,255,0.1)' },
+  bubble1Pos:      { top:-30,right:-40 },
+  bubble2Pos:      { bottom:-20,left:-30 },
+  formContainer:   { flex:1 },
+  scrollContainer: { padding:20, paddingTop:10 },
+  row:             { flexDirection:'row' },
+  inputWrapper:    { flex:1 },
+  field:           { marginTop:20 },
+  label:           { fontSize:14, color:'#374151', marginBottom:8, fontWeight:'500' },
+  inputContainer:  { flexDirection:'row', alignItems:'center', backgroundColor:'#fff', borderRadius:12, borderWidth:1, borderColor:'#E5E7EB', paddingHorizontal:16, height:50, elevation:1 },
+  icon:            { marginRight:12 },
+  input:           { flex:1, fontSize:16, color:'#374151' },
+  eye:             { padding:4 },
+  checkWrap:       { flexDirection:'row', alignItems:'flex-start', marginTop:24, marginBottom:8 },
+  checkbox:        { width:20,height:20,borderWidth:2,borderColor:'#D1D5DB',borderRadius:4,marginRight:12,marginTop:2,alignItems:'center',justifyContent:'center',backgroundColor:'#fff' },
+    checkboxOn: {
+    backgroundColor: '#4A7C59',
+    borderColor:    '#4A7C59',
   },
-  subtitle: { color: '#fff', fontSize: 16 },
-  title: { color: '#fff', fontSize: 32, fontWeight: 'bold', marginTop: 8 },
-  formContainer: { flex: 1 },
-  scrollContainer: { padding: 20 },
-  row: { flexDirection: 'row', justifyContent: 'space-between' },
-  inputWrapper: { flex: 1 },
-  field: { marginTop: 20 },
-  label: { fontSize: 12, color: '#333', marginBottom: 6 },
-  input: {
-    backgroundColor: '#aabfa8',
-    borderRadius: 20,
-    height: 48,
-    paddingHorizontal: 16,
-    color: '#000',
+  checkLabel: {
+    flex:       1,
+    fontSize:   14,
+    color:      '#6B7280',
+    lineHeight: 20,
   },
-  checkboxContainer: { flexDirection: 'row', alignItems: 'center', marginTop: 20 },
-  checkbox: {
-    width: 20,
-    height: 20,
-    borderWidth: 2,
-    borderColor: '#333',
-    marginRight: 8,
+  link: {
+    color:      '#4A7C59',
+    fontWeight: '500',
   },
-  checkboxChecked: { backgroundColor: '#333' },
-  checkboxLabel: { flex: 1, fontSize: 12, color: '#333' },
-  button: {
-    backgroundColor: '#264d00',
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 30,
+
+  /* BUTTON */
+  btn: {
+    marginTop:    32,
+    borderRadius: 12,
+    overflow:     'hidden',
+    elevation:    3,
   },
-  buttonDisabled: { backgroundColor: '#99a399' },
-  buttonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  btnDisabled: {
+    elevation:     0,
+    shadowOpacity: 0,
+  },
+  btnGrad: {
+    paddingVertical: 16,
+    alignItems:      'center',
+  },
+  btnTxt: {
+    color:      '#fff',
+    fontSize:   16,
+    fontWeight: '600',
+  },
+  btnTxtDis: {
+    color: '#9CA3AF',
+  },
+
+  /* FOOTER LINK */
+  signInRow: {
+    flexDirection:   'row',
+    justifyContent:  'center',
+    alignItems:      'center',
+    marginTop:       24,
+    marginBottom:    20,
+  },
+  signInTxt: {
+    fontSize: 14,
+    color:    '#6B7280',
+  },
+  signInLink: {
+    fontSize:   14,
+    color:      '#4A7C59',
+    fontWeight: '600',
+  },
 });

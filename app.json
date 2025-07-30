@@ -21,12 +21,17 @@
         "googleMaps": {
           "apiKey": "AIzaSyCsqxf39pjTDNN4r205Kw4cfUsklevfTKI"
         }
-      }
+      },
+      "package": "com.justin_aldrei.pgt"
     },
     "web": {
       "bundler": "metro",
       "output": "static",
       "favicon": "./assets/images/favicon.png"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0,
+      "checkAutomatically": "ON_ERROR_RECOVERY"
     },
     "plugins": [
       "expo-router",
@@ -38,10 +43,25 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
+      ],
+      [
+        "expo-updates",
+        {
+          "enabled": true
+        }
+      ],
+      [
+        "expo-dev-client"
       ]
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "86e6feea-3510-4bd5-a66b-e06315892f40"
+      }
     }
   }
 }

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Live GPS w/ Geofence & Nearest Gas Station</title>
+  <style>
+    html, body { height: 100%; margin: 0; padding: 0; }
+    #map    { height: 55%; }
+    #info   { font-family: sans-serif; text-align: center; padding: 10px; }
+    .value { font-size: 1.2em; }
+    #status { color: gray; margin-bottom: 0.5em; }
+    #places-list { 
+      max-height: 150px; 
+      overflow-y: auto; 
+      padding: 0 1em;
+      font-family: sans-serif; 
+      font-size: 0.9em;
+    }
+    #controls {
+      margin: 0.5em 0;
+      text-align: center;
+    }
+    #find-gas-btn {
+      padding: 0.5em 1em;
+      font-size: 1em;
+      cursor: pointer;
+    }
+  </style>
+
+  <!-- MQTT.js -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    const GOOGLE_MAPS_API_KEY = "AIzaSyCsqxf39pjTDNN4r205Kw4cfUsklevfTKI";
+    const brokerUrl = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
+    const mqttOptions = {
+      username: 'vanrodolf',
+      password: 'Vanrodolf123.',
+      keepalive: 30,
+      reconnectPeriod: 2000,
+      clientId: 'webclient_' + Math.random().toString(16).substr(2, 8)
+    };
+    const topic = 'device/telemetry';
+
+    let statusEl, latEl, lngEl, placesListEl, findGasBtn;
+    let map, marker, geofenceCircle, placesService, infoWindow;
+    let nearestGasMarker = null;
+    const FENCE_CENTER = { lat: 15.664395, lng: 120.631673 };
+    const FENCE_RADIUS = 1200;  // meters
+
+    function loadGoogleMaps() {
+      const script = document.createElement('script');
+      script.src = 
+        `https://maps.googleapis.com/maps/api/js` +
+        `?key=${GOOGLE_MAPS_API_KEY}` +
+        `&libraries=geometry,places` +
+        `&callback=initMap`;
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+    }
+
+    function initMap() {
+      map = new google.maps.Map(document.getElementById('map'), {
+        center: FENCE_CENTER,
+        zoom: 15
+      });
+
+      geofenceCircle = new google.maps.Circle({
+        strokeColor: '#FF0000',
+        strokeOpacity: 0.6,
+        strokeWeight: 2,
+        fillColor: '#FFCCCC',
+        fillOpacity: 0.2,
+        map,
+        center: FENCE_CENTER,
+        radius: FENCE_RADIUS
+      });
+
+      marker = new google.maps.Marker({
+        position: FENCE_CENTER,
+        map,
+        title: 'Current GPS Position'
+      });
+
+      infoWindow = new google.maps.InfoWindow();
+      placesService = new google.maps.places.PlacesService(map);
+
+      // Initially list establishments if desired
+      fetchEstablishmentsInFence();
+
+      connectAndSubscribeMQTT();
+
+      // Enable the Find Gas button only after first position update
+      findGasBtn.disabled = true;
+      findGasBtn.addEventListener('click', onFindNearestGasStation);
+    }
+
+    function fetchEstablishmentsInFence() {
+      placesService.nearbySearch({
+        location: FENCE_CENTER,
+        radius: FENCE_RADIUS,
+        type: ['establishment']
+      }, (results, status) => {
+        if (status !== google.maps.places.PlacesServiceStatus.OK) {
+          console.warn('PlacesServiceStatus:', status);
+          return;
+        }
+        const container = document.getElementById('places-list');
+        container.innerHTML = '<strong>Establishments within fence:</strong><ul></ul>';
+        const ul = container.querySelector('ul');
+        results.forEach(place => {
+          new google.maps.Marker({
+            position: place.geometry.location,
+            map,
+            icon: {
+              url: 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png'
+            }
+          });
+          const li = document.createElement('li');
+          li.textContent = place.name;
+          ul.appendChild(li);
+        });
+      });
+    }
+
+    function onFindNearestGasStation() {
+      // Use current marker position
+      const pos = marker.getPosition();
+      if (!pos) {
+        alert('Current position not yet available.');
+        return;
+      }
+      // Clear previous gas marker if any
+      if (nearestGasMarker) {
+        nearestGasMarker.setMap(null);
+        nearestGasMarker = null;
+      }
+      // Search by distance
+      placesService.nearbySearch({
+        location: pos,
+        rankBy: google.maps.places.RankBy.DISTANCE,
+        type: ['gas_station']
+      }, (results, status) => {
+        if (status !== google.maps.places.PlacesServiceStatus.OK) {
+          console.warn('PlacesServiceStatus (gas):', status);
+          alert('Unable to find gas stations: ' + status);
+          return;
+        }
+        if (!results || results.length === 0) {
+          alert('No gas stations found nearby.');
+          return;
+        }
+        // Nearest is first result
+        const nearest = results[0];
+        const loc = nearest.geometry.location;
+        // Place a distinct marker
+        nearestGasMarker = new google.maps.Marker({
+          position: loc,
+          map,
+          title: nearest.name,
+          icon: {
+            url: 'http://maps.google.com/mapfiles/ms/icons/yellow-dot.png'
+          }
+        });
+        // Center/zoom map to show both current and gas station
+        map.panTo(loc);
+        map.setZoom(16);
+        // Show info window
+        const content = `
+          <div>
+            <strong>${nearest.name}</strong><br>
+            ${nearest.vicinity || ''}<br>
+            Distance: approx. ${computeDistanceMeters(pos, loc).toFixed(0)} m
+          </div>`;
+        infoWindow.setContent(content);
+        infoWindow.open(map, nearestGasMarker);
+      });
+    }
+
+    function computeDistanceMeters(latLngA, latLngB) {
+      return google.maps.geometry.spherical.computeDistanceBetween(
+        latLngA,
+        latLngB
+      );
+    }
+
+    function connectAndSubscribeMQTT() {
+      const client = mqtt.connect(brokerUrl, mqttOptions);
+      client.on('connect', () => {
+        statusEl.textContent = '✔️ Connected';
+        client.subscribe(topic, err => {
+          if (err) statusEl.textContent = '❌ Subscribe error';
+        });
+      });
+      client.on('reconnect', () => statusEl.textContent = '🔄 Reconnecting…');
+      client.on('error', err => {
+        statusEl.textContent = '❌ Connection error';
+        console.error(err);
+        client.end();
+      });
+      client.on('message', (topic, payload) => {
+        try {
+          const msg = JSON.parse(payload.toString());
+          if (msg.lat != null && msg.lng != null) {
+            const pos = { lat: msg.lat, lng: msg.lng };
+            latEl.textContent = msg.lat.toFixed(6);
+            lngEl.textContent = msg.lng.toFixed(6);
+            marker.setPosition(pos);
+            map.setCenter(pos);
+            // Enable find-gas after first fix:
+            findGasBtn.disabled = false;
+
+            // Check geofence
+            const distance = google.maps.geometry.spherical
+              .computeDistanceBetween(
+                new google.maps.LatLng(pos),
+                geofenceCircle.getCenter()
+              );
+            if (distance <= FENCE_RADIUS) {
+              statusEl.textContent = '📡 Inside Geofence';
+              marker.setIcon('http://maps.google.com/mapfiles/ms/icons/green-dot.png');
+            } else {
+              statusEl.textContent = '📡 Outside Geofence';
+              marker.setIcon('http://maps.google.com/mapfiles/ms/icons/red-dot.png');
+            }
+          }
+        } catch(e) {
+          console.error('Invalid JSON', e);
+        }
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      statusEl = document.getElementById('status');
+      latEl    = document.getElementById('lat');
+      lngEl    = document.getElementById('lng');
+      findGasBtn = document.getElementById('find-gas-btn');
+      loadGoogleMaps();
+    });
+  </script>
+</head>
+<body>
+  <div id="info">
+    <h1>ESP32 GPS Live Data w/ Geofence</h1>
+    <p>Latitude:  <span id="lat" class="value">–</span></p>
+    <p>Longitude: <span id="lng" class="value">–</span></p>
+    <p>Status:    <span id="status">connecting…</span></p>
+    <div id="controls">
+      <button id="find-gas-btn">Find Nearest Gas Station</button>
+    </div>
+  </div>
+  <div id="map"></div>
+  <div id="places-list"></div>
+</body>
+</html>
