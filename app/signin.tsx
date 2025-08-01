@@ -2,7 +2,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Stack, useRouter } from 'expo-router';
 import { jwtDecode } from 'jwt-decode';
-
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
@@ -68,79 +67,78 @@ function SignInScreen() {
     float(bubble2, 3500);
   }, []);
 
-  /* ────────────────────────────────────────────────────── */
-  /* sign-in handler                                       */
-  /* ────────────────────────────────────────────────────── */
   const handleSignIn = async () => {
-    // Clear previous auth
-    await AsyncStorage.multiRemove(['@token', '@role', '@assignedBusId']);
-
+    // Clear previous session data first
+    await AsyncStorage.multiRemove([
+      '@token',
+      '@role',
+      '@userId',
+      '@firstName',
+      '@lastName',
+      '@assignedBusId',
+    ]);
+  
     if (!username.trim() || !password.trim()) {
       alert('Please fill in all fields');
       return;
     }
     setIsLoading(true);
-
-    // Button press animation
+  
     Animated.sequence([
       Animated.timing(buttonScale, { toValue: 0.95, duration: 100, useNativeDriver: true }),
-      Animated.timing(buttonScale, { toValue: 1,    duration: 100, useNativeDriver: true }),
+      Animated.timing(buttonScale, { toValue: 1, duration: 100, useNativeDriver: true }),
     ]).start();
-
+  
     try {
-      const res  = await fetch('http://192.168.1.7:5000/auth/login', {
-        method:  'POST',
+      const res = await fetch('http://192.168.1.7:5000/auth/login', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password }),
       });
-      const txt  = await res.text();
-      const json = JSON.parse(txt || '{}');
-
-      console.log('[SignIn] login response payload →', json);
-
+      const json = await res.json();
+      
+      console.log('--- LOGIN SERVER RESPONSE ---');
+      console.log(JSON.stringify(json, null, 2));
       if (res.ok && json.token) {
-        // Decode role from JWT
-        const decoded = jwtDecode<{ role: string }>(json.token);
-        if (decoded.role === 'manager') {
-          console.log(`[Manager SignIn] JWT → ${json.token}`);
+   type DecodedToken = { user_id: number; role: string };
+const decoded = jwtDecode<DecodedToken>(json.token);
+        const pairs: [string, string][] = [
+          ['@token', json.token],
+          ['@role', decoded.role],
+          // This is now correct and will save the user's ID
+          ['@userId', String(decoded.user_id)],
+        ];
+  
+        if (json.user && json.user.firstName != null) {
+          pairs.push(['@firstName', json.user.firstName]);
         }
-
-         const rawBusId   = json.busId;
-    const busId      = rawBusId   != null ? String(rawBusId)   : null;
-    const rawBusCode = json.busCode;
-    const busCode    = rawBusCode != null ? String(rawBusCode) : null;
-
-    const pairs: [string, string][] = [
-      ['@token', json.token],
-      ['@role',  decoded.role],
-    ];
-    if (busId)   pairs.push(['@assignedBusId',   busId]);
-    if (busCode) pairs.push(['@assignedBusCode', busCode]);
-       await AsyncStorage.multiRemove(['@token', '@role', '@assignedBusId', '@assignedBusCode']);
-    await AsyncStorage.multiSet(pairs);
-
-        // Verify
-        console.log(
-          '[SignIn-after-write] keys:',
-          await AsyncStorage.getAllKeys(),
-          '\n@assignedBusId:',
-          await AsyncStorage.getItem('@assignedBusId')
-        );
-
-        // Navigate into the app
+        if (json.user && json.user.lastName != null) {
+          pairs.push(['@lastName', json.user.lastName]);
+        }
+      
+        // Check for assigned bus ID
+        if (json.busId != null) {
+          pairs.push(['@assignedBusId', String(json.busId)]);
+        }
+        // Save the complete, correct data
+        await AsyncStorage.multiSet(pairs);
+        console.log('--- SAVING TO ASYNCSTORAGE ---');
+        console.log(pairs);
+  
+        await AsyncStorage.multiSet(pairs);
+        router.replace('/');
+  
         router.replace('/');
       } else {
         alert(json.error || 'Invalid credentials');
       }
     } catch (e) {
-      console.error('Network error:', e);
-      alert('Network error');
+      console.error('Sign-in error:', e);
+      alert('A network error occurred during sign-in.');
     } finally {
       setIsLoading(false);
     }
   };
-
-
   return (
     <SafeAreaView style={styles.container}>
       {/* HEADER ------------------------------------------------------- */}

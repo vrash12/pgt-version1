@@ -31,27 +31,67 @@ def route_data_insights():
     Query params
       date=YYYY-MM-DD
       bus_id=1
-      trip_id=3             # optional – you may use it later for stop-time filtering
-      from=HH:MM            # window start (bus’s local time)
-      to=HH:MM              # window end
-    Returns
+      trip_id=3             # optional
+      from=HH:MM            # required if trip_id omitted
+      to=HH:MM              # required if trip_id omitted
+
+    Returns JSON:
       {
         "occupancy": [ {"time":"13:05","passengers":20}, … ],
-        "tickets":   [ {"time":"13:05","tickets":2,"revenue":30.00}, … ]
+        "tickets":   [ {"time":"13:05","tickets":2,"revenue":30.00}, … ],
+        "meta": {
+          "trip_id": 3,
+          "trip_number": "Morning-1",
+          "window_from": "2025-07-29T07:00:00",
+          "window_to":   "2025-07-29T08:25:00"
+        }
       }
     """
-    # ── parse & validate ─────────────────────────────────────────────────
+    # ── parse & validate ────────────────────────────────────────────────
     try:
-        date_str  = request.args["date"]
-        bus_id    = int(request.args["bus_id"])
-        start     = request.args["from"]
-        end       = request.args["to"]
+        date_str = request.args["date"]
+        bus_id   = int(request.args["bus_id"])
     except (KeyError, ValueError):
-        return jsonify(error="date, bus_id, from, to are required"), 400
+        return jsonify(error="date and bus_id are required"), 400
 
-    day        = datetime.strptime(date_str, "%Y-%m-%d").date()
-    window_from= datetime.combine(day,  datetime.strptime(start, "%H:%M").time())
-    window_to  = datetime.combine(day,  datetime.strptime(end,   "%H:%M").time())
+    day = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+    trip_id = request.args.get("trip_id", type=int)
+    if trip_id:
+        # derive window from trip record
+        trip = Trip.query.filter_by(
+            id=trip_id,
+            bus_id=bus_id,
+            service_date=day
+        ).first()
+        if not trip:
+            return jsonify(error="trip not found"), 404
+
+        window_from = datetime.combine(day, trip.start_time)
+        window_to   = datetime.combine(day, trip.end_time)
+        meta = {
+            "trip_id":     trip_id,
+            "trip_number": trip.number,
+            "window_from": window_from.isoformat(),
+            "window_to":   window_to.isoformat(),
+        }
+
+    else:
+        # manual window
+        try:
+            start = request.args["from"]
+            end   = request.args["to"]
+        except KeyError:
+            return jsonify(error="from and to are required when trip_id is omitted"), 400
+
+        window_from = datetime.combine(day, datetime.strptime(start, "%H:%M").time())
+        window_to   = datetime.combine(day, datetime.strptime(end,   "%H:%M").time())
+        meta = {
+            "trip_id":     None,
+            "trip_number": None,
+            "window_from": window_from.isoformat(),
+            "window_to":   window_to.isoformat(),
+        }
 
     # ── SENSOR READINGS (one row per minute) ─────────────────────────────
     occ_rows = (
@@ -89,15 +129,14 @@ def route_data_insights():
     )
     tickets = [
         {
-          "time":    r.hhmm,
-          "tickets": int(r.tickets),
-          "revenue": float(r.revenue or 0)
+            "time":    r.hhmm,
+            "tickets": int(r.tickets),
+            "revenue": float(r.revenue or 0)
         }
         for r in tix_rows
     ]
 
-    return jsonify(occupancy=occupancy, tickets=tickets), 200
-
+    return jsonify(occupancy=occupancy, tickets=tickets, meta=meta), 200
 
 @manager_bp.route("/routes", methods=["GET"])
 @require_role("manager")
@@ -276,6 +315,8 @@ def get_trip(trip_id: int):
 
     return jsonify(
         id          = trip.id,
+        bus_id      = trip.bus_id,                      # ✅ ADD THIS
+        service_date= trip.service_date.isoformat(),    # ✅ ADD THIS
         number      = trip.number,
         origin      = origin,
         destination = destination,

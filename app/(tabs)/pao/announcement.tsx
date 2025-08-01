@@ -4,10 +4,10 @@ import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
   FlatList,
   KeyboardAvoidingView,
   Platform,
+  SafeAreaView,
   StatusBar,
   StyleSheet,
   Text,
@@ -15,28 +15,32 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Ann = {
   id: number;
   message: string;
   timestamp: string;
   created_by: number;
+  author_name: string;
+  bus:          string; 
 };
 
 const API = 'http://192.168.1.7:5000';
-const { width: screenWidth } = Dimensions.get('window');
 
 export default function AnnouncementScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const TAB_BAR_HEIGHT = 65 + insets.bottom;
+  const TAB_BAR_H = (Platform.OS === 'ios' ? 74 : 66) + insets.bottom;
+
+  const flatRef = useRef<FlatList>(null);
+  
+
   const COMPOSER_HEIGHT = 80;
 
   const [loading, setLoading] = useState(true);
   const [anns, setAnns] = useState<Ann[]>([]);
   const [draft, setDraft] = useState('');
-  const flatRef = useRef<FlatList>(null);
 
   useEffect(() => {
     (async () => {
@@ -45,8 +49,13 @@ export default function AnnouncementScreen() {
         const res = await fetch(`${API}/pao/broadcast`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        const json: Ann[] = await res.json();
-        setAnns(json.reverse());
+        if (res.ok) {
+          const json: Ann[] = await res.json();
+          // The backend now sends the list pre-sorted, newest first
+          setAnns(json);
+        }
+      } catch (e) {
+        console.error("Failed to load announcements:", e);
       } finally {
         setLoading(false);
       }
@@ -68,8 +77,9 @@ export default function AnnouncementScreen() {
     });
     if (!res.ok) return;
     const newAnn: Ann = await res.json();
-    setAnns(prev => [...prev, newAnn]);
-    setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
+    // Add the new message to the top of the list
+    setAnns(prev => [newAnn, ...prev]);
+    setTimeout(() => flatRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
   };
 
   const formatDate = (iso: string) =>
@@ -100,8 +110,8 @@ export default function AnnouncementScreen() {
   });
 
   return (
-    <SafeAreaView style={[styles.container, { paddingBottom: TAB_BAR_HEIGHT }]}>      
-      <StatusBar barStyle="dark-content" backgroundColor="#f8fffe" />
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="#fff" />
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="chevron-back" size={24} color="#2E7D32" />
@@ -119,15 +129,21 @@ export default function AnnouncementScreen() {
         ref={flatRef}
         data={dataWithHeaders}
         keyExtractor={item => item.id.toString()}
+        inverted // Optimally displays chat messages
+        style={{ flex: 1 }}
+        contentContainerStyle={{
+                   /* 16 px side-padding like before */
+                   paddingHorizontal: 16,
+          
+                   /*  space = tab-bar + composer + a small margin          *
+                    *  (on an inverted list paddingTop pushes _up_ = down)  */
+                   paddingTop: TAB_BAR_H + COMPOSER_HEIGHT + 16,
+          
+                   /* keep a little room for the very first day-separator */
+                   paddingBottom: 16,
+                 }}
         renderItem={({ item }) => (
           <View style={styles.messageContainer}>
-            {item._showDate && (
-              <View style={styles.dateSeparator}>
-                <View style={styles.dateLine} />
-                <Text style={styles.dateText}>{formatDate(item.timestamp)}</Text>
-                <View style={styles.dateLine} />
-              </View>
-            )}
             <View style={styles.messageWrapper}>
               <View style={styles.avatarContainer}>
                 <View style={styles.avatar}>
@@ -136,23 +152,27 @@ export default function AnnouncementScreen() {
               </View>
               <View style={styles.messageBubble}>
                 <View style={styles.bubbleHeader}>
-                  <Text style={styles.authorName}>Conductor</Text>
+                <Text style={styles.busLabel}>{item.bus}</Text>
                   <Text style={styles.messageTime}>{formatTime(item.timestamp)}</Text>
                 </View>
                 <Text style={styles.messageText}>{item.message}</Text>
               </View>
             </View>
+            {item._showDate && (
+              <View style={styles.dateSeparator}>
+                <View style={styles.dateLine} />
+                <Text style={styles.dateText}>{formatDate(item.timestamp)}</Text>
+                <View style={styles.dateLine} />
+              </View>
+            )}
           </View>
         )}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: TAB_BAR_HEIGHT + COMPOSER_HEIGHT }}  
-        showsVerticalScrollIndicator={false}
-        onContentSizeChange={() => flatRef.current?.scrollToEnd({ animated: false })}
       />
 
-      <KeyboardAvoidingView
-        behavior={Platform.select({ ios: 'padding' })}
-        keyboardVerticalOffset={90}
-        style={[styles.composerContainer, { bottom: TAB_BAR_HEIGHT }]}
+<KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={TAB_BAR_H}
+        style={[styles.composerContainer, { bottom: TAB_BAR_H }]}
       >
         <View style={styles.composerShadow}>
           <View style={styles.composer}>
@@ -163,7 +183,6 @@ export default function AnnouncementScreen() {
               value={draft}
               onChangeText={setDraft}
               multiline
-              maxLength={500}
             />
             <TouchableOpacity
               onPress={handleSend}
@@ -180,22 +199,9 @@ export default function AnnouncementScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fffe',
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f8fffe',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#666',
-    fontWeight: '500',
-  },
+  container: { flex: 1, backgroundColor: '#fff' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },
+  loadingText: { marginTop: 16, fontSize: 16, color: '#666' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -204,6 +210,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#E8F5E8',
+  },
+  busLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#2E7D32',
+    marginRight: 8,
   },
   backButton: {
     width: 40,
@@ -225,6 +237,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+ 
   messageContainer: { marginBottom: 16 },
   dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 20 },
   dateLine: { flex: 1, height: 1, backgroundColor: '#E0E0E0' },
@@ -239,32 +252,22 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: '#E8F5E8',
+    elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
     shadowRadius: 8,
-    elevation: 2,
   },
   bubbleHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   authorName: { fontSize: 14, fontWeight: '700', color: '#2E7D32' },
   messageTime: { fontSize: 12, color: '#666', fontWeight: '500' },
   messageText: { fontSize: 15, color: '#333', lineHeight: 22 },
-  composerContainer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-  },
   composerShadow: {
     backgroundColor: '#fff',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderTopWidth: 1,
     borderTopColor: '#E8F5E8',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 8,
   },
   composer: {
     flexDirection: 'row',
@@ -276,6 +279,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E0E0E0',
   },
-  textInput: { flex: 1, fontSize: 16, color: '#333', maxHeight: 100, minHeight: 40, paddingVertical: 8 },
-  sendButton: { backgroundColor: '#2E7D32', width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginLeft: 8, elevation: 4 },
+    composerContainer: {
+        position: 'absolute',
+        left:     0,
+        right:    0,
+      },
+  textInput: { flex: 1, fontSize: 16, color: '#333', maxHeight: 100, paddingVertical: Platform.OS === 'ios' ? 8 : 0 },
+  sendButton: { backgroundColor: '#2E7D32', width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginLeft: 8, marginBottom: Platform.OS === 'ios' ? 0 : 4 },
 });

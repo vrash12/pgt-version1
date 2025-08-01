@@ -221,7 +221,7 @@ export default function PaoLayout() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+   <SafeAreaView style={{ flex: 1 }}>
       <Tabs
         tabBar={CustomBar}
         screenOptions={{

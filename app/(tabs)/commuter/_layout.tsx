@@ -68,6 +68,10 @@ export default function CommuterTabLayout() {
       <Tabs.Screen name="dashboard"       options={{ tabBarIcon: icon('home','home-outline') }} />
       <Tabs.Screen name="route-schedules" options={{ tabBarIcon: icon('calendar','calendar-outline') }} />
       <Tabs.Screen name="live-locations"  options={{ tabBarIcon: icon('navigate','navigate-outline') }} />
+      <Tabs.Screen
+        name="notifications"
+        options={{ tabBarIcon: icon('notifications', 'notifications-outline') }}
+      />
       <Tabs.Screen name="my-receipts"     options={{ tabBarIcon: icon('receipt','receipt-outline') }} />
 
 

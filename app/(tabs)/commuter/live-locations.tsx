@@ -1,4 +1,3 @@
-// app/(tabs) / commuter/ live-locations.tsx
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
@@ -23,16 +22,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNotifications } from '../../lib/NotificationContext';
 import { BAR_H } from './_layout';
 
+// --- CONSTANTS, TYPES, AND HELPERS ---
 interface LatLng { latitude: number; longitude: number; }
 interface BusFix  { id: string; lat: number; lng: number; people: number; }
 
-const MQTT_URL          = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
-const MQTT_USER         = 'vanrodolf';
-const MQTT_PASS         = 'Vanrodolf123.';
-const TOPIC_TELEMETRY   = 'device/+/telemetry';
-const TOPIC_REQ         = 'commuter/livestream/request';
-const TOPIC_ACK         = 'commuter/livestream/ack';
-const TOPIC_PAO_UPDATES = 'pao/passenger/updates';
+const MQTT_URL            = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
+const MQTT_USER           = 'vanrodolf';
+const MQTT_PASS           = 'Vanrodolf123.';
+const TOPIC_TELEMETRY_ALL = 'device/#';
+const TOPIC_REQ           = 'commuter/livestream/request';
+
+const tPaoUp = (b: string) => `pao/${b}/passenger/updates`;
+const topicCommuterAck = (b: string) => `commuter/${b}/livestream/ack`;
 
 const toTopicId = (raw: string) => {
   if (raw.startsWith('bus-')) return raw;
@@ -42,119 +43,111 @@ const toTopicId = (raw: string) => {
 
 
 export default function LiveLocationScreen() {
-  const router       = useRouter();
-  const insets       = useSafeAreaInsets();
-  const mapRef       = useRef<MapView>(null);
-  const TAB_H        = BAR_H + insets.bottom;
-  const mqttRef      = useRef<MqttClient|null>(null);
-  const { add:addNotice } = useNotifications();
-  const pulseAnim    = useRef(new Animated.Value(1)).current;
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const mapRef = useRef<MapView>(null);
+  const TAB_H = BAR_H + insets.bottom;
+  const mqttRef = useRef<MqttClient | null>(null);
+  const { add: addNotice } = useNotifications();
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
-  const [userId, setUserId]               = useState<string|null>(null);
-  const [fixes, setFixes]                 = useState<Record<string,BusFix>>({});
-  const [selectedId, setSelectedId]       = useState<string|null>(null);
-  const [userLoc, setUserLoc]             = useState<LatLng|null>(null);
-  const [etaMinutes, setEtaMinutes]       = useState(0);
-  const [routeCoords, setRouteCoords]     = useState<LatLng[]>([]);
-  const [loading, setLoading]             = useState(true);
-
-  const [isSharing, setIsSharing]         = useState(false);
-  const [remaining, setRemaining]         = useState(10);
-  const [ackTime, setAckTime]             = useState<Date|null>(null);
-
+  // --- STATE AND REFS ---
+  const [userId, setUserId] = useState<string | null>(null);
+  const [fixes, setFixes] = useState<Record<string, BusFix>>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [userLoc, setUserLoc] = useState<LatLng | null>(null);
+  const [etaMinutes, setEtaMinutes] = useState(0);
+  const [routeCoords, setRouteCoords] = useState<LatLng[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isSharing, setIsSharing] = useState(false);
+  const [remaining, setRemaining] = useState(10);
+  const [ackTime, setAckTime] = useState<Date | null>(null);
   const windowH = Dimensions.get('window').height;
 
-  // Pulse animation for active elements
+  const selectedIdRef = useRef(selectedId);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+
+  // --- SIDE EFFECTS (useEffect) ---
+
+  // 1. Animation setup
   useEffect(() => {
     const pulse = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.1,
-          duration: 1000,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 1000,
-          useNativeDriver: true,
-        }),
+        Animated.timing(pulseAnim, { toValue: 1.1, duration: 1000, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
       ])
     );
     pulse.start();
     return () => pulse.stop();
   }, []);
 
-  // restore preferred bus on mount
+  // 2. Main MQTT connection and message handler (runs only once)
   useEffect(() => {
-    AsyncStorage.getItem('@preferredBusId')
-      .then(stored => {
-        if (stored) {
-          const norm = toTopicId(stored);
-          console.log('[DEBUG] restoring preferred bus →', norm);
-          setSelectedId(norm);
+    const client = mqtt.connect(MQTT_URL, {
+      username: MQTT_USER,
+      password: MQTT_PASS,
+    });
+    mqttRef.current = client;
+
+    client.on('connect', () => {
+      console.log('[MQTT] Connected to broker.');
+      client.subscribe(TOPIC_TELEMETRY_ALL);
+    });
+
+    client.on('message', (topic, raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+
+        if (topic.includes('/telemetry')) {
+          const [, deviceIdRaw] = topic.split('/');
+          const deviceId = toTopicId(deviceIdRaw);
+          const { lat, lng, people = 0 } = msg;
+          setFixes(f => ({ ...f, [deviceId]: { id: deviceId, lat, lng, people } }));
+          setSelectedId(prev => prev ?? deviceId);
+          return;
         }
-      })
-      .catch(e => console.warn('AsyncStorage error', e));
+
+        const currentSelectedId = selectedIdRef.current;
+        if (currentSelectedId && topic === topicCommuterAck(currentSelectedId) && msg.ok) {
+          console.log(`[MQTT] ACK received for bus ${currentSelectedId}`);
+          setAckTime(new Date());
+        }
+      } catch (e) {
+        console.warn('MQTT parse error', e);
+      }
+    });
+
+    return () => {
+      client.end(true);
+      mqttRef.current = null;
+    };
   }, []);
 
-  // load userId
+  // 3. Manage bus-specific subscriptions
   useEffect(() => {
+    const client = mqttRef.current;
+    if (client && selectedId) {
+      const ackTopic = topicCommuterAck(selectedId);
+      client.subscribe(ackTopic);
+      return () => {
+        if (client.connected) client.unsubscribe(ackTopic);
+      };
+    }
+  }, [selectedId]);
+
+  // 4. Load user data and permissions
+  useEffect(() => {
+    AsyncStorage.getItem('@preferredBusId').then(stored => {
+      if (stored) setSelectedId(toTopicId(stored));
+    });
     AsyncStorage.getItem('@userId').then(id => {
       if (id) setUserId(id);
     });
-  }, []);
 
-// ✅ Run exactly once, on component mount
-useEffect(() => {
-  const client = mqtt.connect(MQTT_URL, {
-    username: MQTT_USER,
-    password: MQTT_PASS,
-    keepalive: 30,
-    reconnectPeriod: 2000,
-    protocol: 'wss',
-  });
-  mqttRef.current = client;
-
-  client.on('connect', () => {
-    // subscribe to everything once
-    client.subscribe([TOPIC_TELEMETRY, TOPIC_ACK]);
-  });
-
-client.on('message', (topic, raw) => {
-  try {
-    const [, deviceIdRaw, channel] = topic.split('/');
-    const deviceId = toTopicId(deviceIdRaw);
-    const msg = JSON.parse(raw.toString());
-
-    console.log('Received message:', msg);  // Debugging log
-
-    if (channel === 'telemetry') {
-      const { lat, lng, people = 0 } = msg;
-      setFixes(f => ({ ...f, [deviceId]: { id: deviceId, lat, lng, people } }));
-
-      // ✅ choose a default only once
-      setSelectedId(prev => prev ?? deviceId);
-    }
-
-    if (channel === 'ack' && msg.ok) {
-      setAckTime(new Date());
-    }
-  } catch (e) {
-    console.warn('MQTT parse error', e);
-  }
-});
-
-
-  return () => {
-    client.end(true);
-    mqttRef.current = null;
-  };
-}, []);  // ← remove selectedId from deps!
-
-
-  // watch user location
-  useEffect(() => {
-    let sub: Location.LocationSubscription|undefined;
+    let sub: Location.LocationSubscription | undefined;
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
@@ -167,51 +160,47 @@ client.on('message', (topic, raw) => {
     })();
     return () => sub?.remove();
   }, []);
-
-  // push commuter location to PAO
+  
+  // 5. Publish commuter location to PAO
   useEffect(() => {
-    if (!mqttRef.current || !userId || !userLoc) return;
-    const push = () => {
-      mqttRef.current!.publish(
-        TOPIC_PAO_UPDATES,
-        JSON.stringify({ type: 'location', id: userId, lat: userLoc.latitude, lng: userLoc.longitude })
-      );
-    };
+    if (!mqttRef.current || !userId || !userLoc || !selectedId) return;
+    
+    const topic = tPaoUp(selectedId);
+    const payload = JSON.stringify({
+      type: 'location', id: userId, lat: userLoc.latitude, lng: userLoc.longitude,
+    });
+    const push = () => mqttRef.current!.publish(topic, payload);
+
     push();
-    const h = setInterval(push, 10000);
-    return () => clearInterval(h);
-  }, [userLoc, userId]);
+    const intervalId = setInterval(push, 10000);
+    return () => clearInterval(intervalId);
+  }, [userLoc, userId, selectedId]);
 
-  // compute route + ETA when either moves
+  // 6. Compute route and ETA
   useEffect(() => {
-    console.log('All buses data:', fixes); 
     const activeFix = selectedId ? fixes[selectedId] : undefined;
-    if (!activeFix) {
-  console.log('No active bus data available');
-  return;  // If there's no active bus data, return early
-}
     if (!activeFix || !userLoc) return;
-    setRouteCoords([
-      { latitude: activeFix.lat, longitude: activeFix.lng },
-      userLoc
-    ]);
+    
+    const route = [{ latitude: activeFix.lat, longitude: activeFix.lng }, userLoc];
+    setRouteCoords(route);
+
     const dLat = activeFix.lat - userLoc.latitude;
     const dLng = activeFix.lng - userLoc.longitude;
-    const distanceKm = Math.sqrt(dLat*dLat + dLng*dLng) * 111;
+    const distanceKm = Math.sqrt(dLat * dLat + dLng * dLng) * 111;
     setEtaMinutes(Math.max(1, Math.round(distanceKm / 0.4)));
-    mapRef.current?.animateToRegion(
-      { latitude: activeFix.lat, longitude: activeFix.lng, latitudeDelta: 0.03, longitudeDelta: 0.03 },
-      500
-    );
+
+    mapRef.current?.fitToCoordinates(route, {
+      edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
+      animated: true,
+    });
   }, [fixes, selectedId, userLoc]);
 
-  // countdown share
+  // 7. Countdown for location sharing
   useEffect(() => {
     if (!isSharing) return;
     const t = setInterval(() => setRemaining(r => {
       if (r <= 1) {
         setIsSharing(false);
-        setRemaining(10);
         setAckTime(null);
         return 10;
       }
@@ -220,12 +209,14 @@ client.on('message', (topic, raw) => {
     return () => clearInterval(t);
   }, [isSharing]);
 
+
+  // --- HANDLER FUNCTIONS ---
   const notifyConductor = () => {
-    if (!mqttRef.current) return;
+    if (!mqttRef.current || !selectedId) return;
     mqttRef.current.publish(TOPIC_REQ, JSON.stringify({ minutes: remaining }));
     if (userId) {
       mqttRef.current.publish(
-        TOPIC_PAO_UPDATES,
+        tPaoUp(selectedId),
         JSON.stringify({ type: 'request', id: userId, minutes: remaining, timestamp: Date.now() })
       );
     }
@@ -242,21 +233,16 @@ client.on('message', (topic, raw) => {
   };
 
   const closeShare = () => Alert.alert(
-    'Close Live Location',
-    'Stop sharing your live location?',
-    [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Stop',
-        style: 'destructive',
-        onPress: () => {
-          setIsSharing(false);
-          setRemaining(10);
-          setAckTime(null);
-          addNotice('Live Location Closed', 'Sharing has been stopped.');
-        }
+    'Close Live Location', 'Stop sharing your live location?',
+    [{ text: 'Cancel', style: 'cancel' }, {
+      text: 'Stop', style: 'destructive',
+      onPress: () => {
+        setIsSharing(false);
+        setRemaining(10);
+        setAckTime(null);
+        addNotice('Live Location Closed', 'Sharing has been stopped.');
       }
-    ]
+    }]
   );
 
   const activeFix = selectedId ? fixes[selectedId] : undefined;
@@ -284,11 +270,7 @@ client.on('message', (topic, raw) => {
 
       {/* Enhanced Header with Gradient Effect */}
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <View style={styles.backButtonInner}>
-            <Ionicons name="chevron-back" size={24} color="#fff" />
-          </View>
-        </TouchableOpacity>
+    
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>🚍 Live Tracking</Text>
           <Text style={styles.headerSubtitle}>Real-time bus locations</Text>

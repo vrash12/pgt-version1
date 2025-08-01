@@ -33,7 +33,7 @@ export default function TicketRecords() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [updating, setUpdating] = useState<number|null>(null);
+  const [updating, setUpdating] = useState<number | null>(null);
 
   /** Load tickets */
   const loadTickets = async (isRefresh = false) => {
@@ -80,9 +80,7 @@ export default function TicketRecords() {
         },
         body: JSON.stringify({ paid: true }),
       });
-      setTickets(prev =>
-        prev.map(x => (x.id === t.id ? { ...x, paid: true } : x)),
-      );
+      setTickets(prev => prev.map(x => (x.id === t.id ? { ...x, paid: true } : x)));
     } catch (e) {
       console.error('Mark-paid error', e);
     } finally {
@@ -92,7 +90,7 @@ export default function TicketRecords() {
 
   // Stats
   const totalTickets = tickets.length;
-  const paidTickets  = tickets.filter(t => t.paid).length;
+  const paidTickets = tickets.filter(t => t.paid).length;
   const totalRevenue = tickets
     .filter(t => t.paid)
     .reduce((sum, t) => sum + parseFloat(t.fare), 0);
@@ -102,25 +100,18 @@ export default function TicketRecords() {
       {/* Header */}
       <View style={styles.headerContainer}>
         <View style={styles.header}>
-          <TouchableOpacity 
-            onPress={() => router.back()}
-            style={styles.backButton}
-          >
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={24} color="#fff" />
           </TouchableOpacity>
           <View style={styles.headerTextContainer}>
             <Text style={styles.headerTitle}>Ticket Records</Text>
             <Text style={styles.headerSubtitle}>Today's transactions</Text>
           </View>
-          <TouchableOpacity 
-            onPress={onRefresh}
-            style={styles.refreshButton}
-            disabled={refreshing}
-          >
-            <Ionicons 
-              name="refresh" 
-              size={20} 
-              color="#fff" 
+          <TouchableOpacity onPress={onRefresh} style={styles.refreshButton} disabled={refreshing}>
+            <Ionicons
+              name="refresh"
+              size={20}
+              color="#fff"
               style={{ transform: [{ rotate: refreshing ? '180deg' : '0deg' }] }}
             />
           </TouchableOpacity>
@@ -128,9 +119,7 @@ export default function TicketRecords() {
         <View style={styles.dateContainer}>
           <View style={styles.dateCard}>
             <Ionicons name="calendar-outline" size={16} color="#2e7d32" />
-            <Text style={styles.dateText}>
-              {dayjs().format('MMMM D, YYYY')}
-            </Text>
+            <Text style={styles.dateText}>{dayjs().format('MMMM D, YYYY')}</Text>
           </View>
         </View>
       </View>
@@ -158,14 +147,7 @@ export default function TicketRecords() {
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            colors={['#2e7d32']}
-            tintColor="#2e7d32"
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#2e7d32']} tintColor="#2e7d32" />}
       >
         {loading ? (
           <View style={styles.loadingContainer}>
@@ -176,34 +158,15 @@ export default function TicketRecords() {
           <View style={styles.emptyContainer}>
             <Ionicons name="receipt-outline" size={60} color="#ccc" />
             <Text style={styles.emptyTitle}>No Tickets Yet</Text>
-            <Text style={styles.emptySubtitle}>
-              Tickets issued today will appear here
-            </Text>
+            <Text style={styles.emptySubtitle}>Tickets issued today will appear here</Text>
           </View>
         ) : (
           tickets.map((ticket, index) => (
-            <View
-              key={ticket.id}            // ← unique key on each mapped child
-              style={[
-                styles.ticketCard,
-                { marginTop: index === 0 ? 0 : 12 },
-              ]}
-            >
+            <View key={ticket.referenceNo} style={[styles.ticketCard, { marginTop: index === 0 ? 0 : 12 }]}>
               {/* Status Badge */}
-              <View
-                style={[
-                  styles.statusBadge,
-                  ticket.paid ? styles.statusPaid : styles.statusPending
-                ]}
-              >
-                <Ionicons 
-                  name={ticket.paid ? "checkmark-circle" : "time-outline"} 
-                  size={12} 
-                  color="#fff" 
-                />
-                <Text style={styles.statusText}>
-                  {ticket.paid ? 'PAID' : 'PENDING'}
-                </Text>
+              <View style={[styles.statusBadge, ticket.paid ? styles.statusPaid : styles.statusPending]}>
+                <Ionicons name={ticket.paid ? 'checkmark-circle' : 'time-outline'} size={12} color="#fff" />
+                <Text style={styles.statusText}>{ticket.paid ? 'PAID' : 'PENDING'}</Text>
               </View>
 
               {/* Header */}
@@ -227,7 +190,6 @@ export default function TicketRecords() {
                     <Text style={styles.detailValue}>{ticket.date}</Text>
                   </View>
                 </View>
-
                 <View style={styles.detailItem}>
                   <Ionicons name="time" size={14} color="#666" />
                   <View>
@@ -243,13 +205,9 @@ export default function TicketRecords() {
                   <Text style={styles.fareLabel}>Total Fare</Text>
                   <Text style={styles.fareAmount}>₱{ticket.fare}</Text>
                 </View>
-
                 {!ticket.paid && (
                   <TouchableOpacity
-                    style={[
-                      styles.payButton,
-                      updating === ticket.id && styles.payButtonLoading
-                    ]}
+                    style={[styles.payButton, updating === ticket.id && styles.payButtonLoading]}
                     onPress={() => markPaid(ticket)}
                     disabled={updating === ticket.id}
                   >
@@ -258,11 +216,25 @@ export default function TicketRecords() {
                     ) : (
                       <Ionicons name="card-outline" size={16} color="#fff" />
                     )}
-                    <Text style={styles.payButtonText}>
-                      {updating === ticket.id ? 'Processing...' : 'Mark as Paid'}
-                    </Text>
+                    <Text style={styles.payButtonText}>{updating === ticket.id ? 'Processing...' : 'Mark as Paid'}</Text>
                   </TouchableOpacity>
                 )}
+              </View>
+
+              {/* View / Edit actions */}
+              <View style={styles.recordActions}>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => router.push({ pathname: '/pao/ticket-detail', params: { id: String(ticket.id) } })}
+                >
+                  <Text style={styles.actionText}>View</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => router.push({ pathname: '/pao/ticket-detail', params: { id: String(ticket.id), edit: 'true' } })}
+                >
+                  <Text style={styles.actionText}>Edit</Text>
+                </TouchableOpacity>
               </View>
             </View>
           ))
@@ -271,10 +243,29 @@ export default function TicketRecords() {
     </View>
   );
 }
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8faf9',
+  },
+
+  recordActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+    marginTop: 12,
+  },
+  actionBtn: {
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  actionText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   // Header Styles

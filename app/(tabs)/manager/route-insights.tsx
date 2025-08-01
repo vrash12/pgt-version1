@@ -35,6 +35,7 @@ export default function RouteInsights() {
   const [busId,  setBusId]  = useState<number>();
   const [trips,  setTrips]  = useState<Trip[]>([]);
   const [tripId, setTripId] = useState<number>();
+  const [tripTimes,setTripTimes] = useState<{start:string,end:string}|null>(null);
   const [routeId, setRouteId] = useState<number>();          // derived later
 
   /* modals */
@@ -71,7 +72,10 @@ export default function RouteInsights() {
         const url   = `${BACKEND}/manager/bus-trips?bus_id=${busId}&date=${day}`;
         const trips = await (await fetch(url,{ headers:tok?{Authorization:`Bearer ${tok}`}:{}})).json();
         setTrips(trips);
-        setTripId(trips[0]?.id);
+        if (trips.length) {
+             setTripId(trips[0].id);
+             setTripTimes({ start: trips[0].start_time, end: trips[0].end_time });
+           }
         if(trips[0]?.route_id) setRouteId(trips[0].route_id);
       }catch(e){ console.error('[RouteInsights] trip list error',e); }
     })();
@@ -85,11 +89,11 @@ export default function RouteInsights() {
       const tok = await AsyncStorage.getItem('@token');
       const qs  = new URLSearchParams({
         date: dayjs(date).format('YYYY-MM-DD'),
-        route_id:String(routeId),
-        bus_id:String(busId),
-        trip_id:String(tripId),
-        from:fmtHHMM(startTime),
-        to:fmtHHMM(endTime),
+         trip_id:String(tripId),
+         ...(tripId ? {} : {                 // fallback – keep window mode working
+             from:fmtHHMM(startTime),
+             to:  fmtHHMM(endTime)
+         })
       });
       const res = await fetch(`${BACKEND}/manager/route-insights?${qs}`,
                               { headers:tok?{Authorization:`Bearer ${tok}`}:{} });
@@ -147,18 +151,40 @@ export default function RouteInsights() {
             <Text style={styles.rowText}>{dayjs(date).format('MMMM D, YYYY')}</Text>
           </TouchableOpacity>
 
-          {/* Trip */}
-          <View style={styles.row}>
-            <Ionicons name="list" size={16} color="#2e7d32" style={{marginHorizontal:12}}/>
-            <View style={styles.pickerWrap}>
-              <Picker selectedValue={tripId} onValueChange={setTripId} enabled={!!trips.length} style={styles.picker}>
-                <Picker.Item label="Select Trip" value={undefined}/>
-                {trips.map(t=>
-                  <Picker.Item key={t.id} label={`${t.number} • ${t.start_time}–${t.end_time}`} value={t.id}/>
-                )}
-              </Picker>
-            </View>
-          </View>
+         {/* Trip */}
+<View style={styles.row}>
+  <Ionicons
+    name="list"
+    size={16}
+    color="#2e7d32"
+    style={{ marginHorizontal: 12 }}
+  />
+  <View style={styles.pickerWrap}>
+    <Picker
+      selectedValue={tripId}
+      enabled={trips.length > 0}
+      style={styles.picker}
+      onValueChange={(value: number | undefined) => {
+        setTripId(value);
+        // once we've picked a trip, propagate its route_id
+        const sel = trips.find(t => t.id === value);
+        if (sel && sel.route_id != null) {
+          setRouteId(sel.route_id);
+        }
+      }}
+    >
+      <Picker.Item label="Select Trip" value={undefined} />
+      {trips.map(t => (
+        <Picker.Item
+          key={t.id}
+          label={`${t.number} • ${t.start_time}–${t.end_time}`}
+          value={t.id}
+        />
+      ))}
+    </Picker>
+  </View>
+</View>
+
 
           {/* button */}
           <TouchableOpacity style={[styles.btn,{opacity:loading||!tripId?0.6:1}]}

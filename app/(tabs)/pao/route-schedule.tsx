@@ -1,18 +1,14 @@
-/* -----------------------------------------------------------------------
- *  route-schedule.tsx   (PAO → Enhanced Timeline view - Modern Design)
- *  Path: app/(tabs)/pao/route-schedule.tsx
- * ---------------------------------------------------------------------- */
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
-  Dimensions,
   FlatList,
   Platform,
   RefreshControl,
+  SafeAreaView,
   StatusBar,
   StyleSheet,
   Text,
@@ -20,118 +16,105 @@ import {
   View,
 } from 'react-native';
 
-const BACKEND = 'http://192.168.1.7:5000';
-const { width } = Dimensions.get('window');
+const API = 'http://192.168.1.7:5000';
 
 type TimelineItem = {
-  time:        string;
-  label:       string;
-  loc?:        string;
-  type:        'trip' | 'stop';
-  duration?:   string;
-  nextStop?:   string;
+  key: string;
+  time: string;
+  label: string;
+  loc?: string;
+  type: 'trip' | 'stop';
+  duration?: string;
+};
+
+// Helper to format time to 12-hour format with AM/PM
+const formatTime = (time24: string): string => {
+  if (!time24) return '';
+  const [hours, minutes] = time24.split(':');
+  const h = parseInt(hours, 10);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const hour12 = h % 12 || 12;
+  return `${hour12}:${minutes} ${ampm}`;
+};
+
+// Helper to calculate duration between two times
+const calculateDuration = (start: string, end: string): string => {
+  const startMinutes = parseInt(start.split(':')[0]) * 60 + parseInt(start.split(':')[1]);
+  const endMinutes = parseInt(end.split(':')[0]) * 60 + parseInt(end.split(':')[1]);
+  const duration = endMinutes - startMinutes;
+  if (duration <= 0) return '';
+  return `${duration} min`;
 };
 
 export default function PaoRouteSchedule() {
-  const [tempDate, setTempDate]     = useState(new Date());
-  const [selDate, setSelDate]       = useState(new Date());
-  const [showPicker, setShowPicker] = useState(false);
-
-  const [events, setEvents]         = useState<TimelineItem[]>([]);
-  const [loading, setLoading]       = useState(false);
+  const [events, setEvents] = useState<TimelineItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [fadeAnim]                  = useState(new Animated.Value(0));
-  const [headerOpacity]             = useState(new Animated.Value(1));
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [showPicker, setShowPicker] = useState(false);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
-  const showError = (msg: string) => {
-    // replace with your Alert implementation
-    console.warn('[PAO Schedule]', msg);
-  };
-
-  // Enhanced timeline building with better time formatting
   const buildTimeline = async () => {
     setLoading(true);
+    fadeAnim.setValue(0);
     try {
-      const token   = await AsyncStorage.getItem('@token');
-      const day     = selDate.toISOString().slice(0,10);
+      const token = await AsyncStorage.getItem('@token');
+      if (!token) throw new Error('Authentication token not found.');
 
-      // 1) fetch trips
-      const tripsRes = await fetch(
-        `${BACKEND}/pao/bus-trips?date=${day}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!tripsRes.ok) throw new Error('Failed to fetch trips');
-      const trips = await tripsRes.json() as { id:number }[];
+      // Correctly format the date to YYYY-MM-DD
+      const year = selectedDate.getFullYear();
+      const month = (selectedDate.getMonth() + 1).toString().padStart(2, '0');
+      const day = selectedDate.getDate().toString().padStart(2, '0');
+      const dateForAPI = `${year}-${month}-${day}`;
 
-      // 2) for each trip, fetch stops & build events
-      const timeline: TimelineItem[] = [];
-      for (const t of trips) {
-        const stopsRes = await fetch(
-          `${BACKEND}/pao/stop-times?trip_id=${t.id}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!stopsRes.ok) continue;
-        const stops = await stopsRes.json() as {
-          stop_name: string;
-          arrive_time: string;
-          depart_time: string;
-        }[];
-
-        let prev: typeof stops[0] | null = null;
-        stops.forEach((st, index) => {
-          // Format times better
-          const arriveTime = formatTime(st.arrive_time);
-          const departTime = formatTime(st.depart_time);
-          
-          // stop event
-          timeline.push({
-            time:  arriveTime === departTime ? arriveTime : `${arriveTime} - ${departTime}`,
-            label: index === 0 ? 'Departure' : index === stops.length - 1 ? 'Final Stop' : 'Stop',
-            loc:   st.stop_name,
-            type:  'stop',
-            duration: calculateDuration(st.arrive_time, st.depart_time),
-            nextStop: index < stops.length - 1 ? stops[index + 1].stop_name : undefined
-          });
-          
-          // trip segment
-          if (prev && prev.depart_time !== st.arrive_time) {
-            const tripDuration = calculateDuration(prev.depart_time, st.arrive_time);
-            timeline.push({
-              time:  `${formatTime(prev.depart_time)} - ${formatTime(st.arrive_time)}`,
-              label: 'In Transit',
-              loc:   `${prev.stop_name} → ${st.stop_name}`,
-              type:  'trip',
-              duration: tripDuration
-            });
-          }
-          prev = st;
-        });
-      }
-
-      // Sort by time
-      timeline.sort((a, b) => {
-        const timeA = a.time.split(' ')[0];
-        const timeB = b.time.split(' ')[0];
-        return timeA.localeCompare(timeB);
+      const tripsRes = await fetch(`${API}/pao/bus-trips?date=${dateForAPI}`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
 
+      if (!tripsRes.ok) {
+        throw new Error('Failed to fetch schedule. Is the PAO assigned to a bus?');
+      }
+
+      const trips = await tripsRes.json();
+      const timeline: TimelineItem[] = [];
+
+      for (const t of trips) {
+        const stopsRes = await fetch(`${API}/pao/stop-times?trip_id=${t.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!stopsRes.ok) continue;
+
+        const stops = await stopsRes.json();
+        let prevStop: any = null;
+
+        stops.forEach((st: any) => {
+          if (prevStop && prevStop.depart_time !== st.arrive_time) {
+            timeline.push({
+              key: `trip-${t.id}-${prevStop.stop_name}`,
+              time: `${formatTime(prevStop.depart_time)} - ${formatTime(st.arrive_time)}`,
+              label: `Trip #${t.number}`,
+              loc: `${prevStop.stop_name} → ${st.stop_name}`,
+              type: 'trip',
+              duration: calculateDuration(prevStop.depart_time, st.arrive_time),
+            });
+          }
+          if (st.arrive_time !== st.depart_time) {
+            timeline.push({
+              key: `stop-${t.id}-${st.stop_name}`,
+              time: `${formatTime(st.arrive_time)} - ${formatTime(st.depart_time)}`,
+              label: 'Service Stop',
+              loc: st.stop_name,
+              type: 'stop',
+              duration: calculateDuration(st.arrive_time, st.depart_time),
+            });
+          }
+          prevStop = st;
+        });
+      }
       setEvents(timeline);
-      
-      // Stagger animation for items
-      Animated.stagger(50, 
-        timeline.map((_, index) => 
-          Animated.timing(fadeAnim, {
-            toValue: 1,
-            duration: 300,
-            useNativeDriver: true,
-            delay: index * 50
-          })
-        )
-      ).start();
-      
-    } catch (e:any) {
-      console.error(e);
-      showError('Could not load schedule');
+      Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
+    } catch (e: any) {
+      console.error(e.message);
       setEvents([]);
     } finally {
       setLoading(false);
@@ -139,576 +122,177 @@ export default function PaoRouteSchedule() {
     }
   };
 
-  // Helper functions
-  const formatTime = (time: string): string => {
-    // Convert 24h format to 12h format with AM/PM
-    const [hours, minutes] = time.split(':');
-    const hour24 = parseInt(hours);
-    const hour12 = hour24 === 0 ? 12 : hour24 > 12 ? hour24 - 12 : hour24;
-    const ampm = hour24 >= 12 ? 'PM' : 'AM';
-    return `${hour12}:${minutes} ${ampm}`;
-  };
-
-  const calculateDuration = (start: string, end: string): string => {
-    const [startH, startM] = start.split(':').map(Number);
-    const [endH, endM] = end.split(':').map(Number);
-    const startMinutes = startH * 60 + startM;
-    const endMinutes = endH * 60 + endM;
-    const duration = endMinutes - startMinutes;
-    
-    if (duration <= 0) return '';
-    const hours = Math.floor(duration / 60);
-    const minutes = duration % 60;
-    
-    if (hours > 0) {
-      return `${hours}h ${minutes}m`;
-    }
-    return `${minutes}m`;
-  };
-
-  const getCurrentStatus = (item: TimelineItem, index: number): 'upcoming' | 'current' | 'completed' => {
-    const now = new Date();
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    
-    // This is a simplified logic - you'd want to implement proper time comparison
-    return index === 0 ? 'current' : index < 3 ? 'upcoming' : 'completed';
-  };
-
   useEffect(() => {
     buildTimeline();
-  }, [selDate]);
+  }, [selectedDate]);
 
-  // pull to refresh
   const onRefresh = () => {
     setRefreshing(true);
-    fadeAnim.setValue(0);
     buildTimeline();
   };
-
-  // date picker handlers
-  const onDatePick = (_: any, d?: Date) => {
-    setShowPicker(false);
-    if (d && d.toDateString() !== selDate.toDateString()) {
-      setTempDate(d);
-      setTimeout(() => setSelDate(d), 100);
-      fadeAnim.setValue(0);
+  
+  const onDateChange = (event: any, date?: Date) => {
+    setShowPicker(Platform.OS === 'ios');
+    if (date) {
+      setSelectedDate(date);
     }
   };
 
-  const isToday = selDate.toDateString() === new Date().toDateString();
+  const isToday = selectedDate.toDateString() === new Date().toDateString();
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#1a4a1a" />
-      
-      {/* Enhanced header with gradient effect */}
-      <Animated.View style={[styles.headerContainer, { opacity: headerOpacity }]}>
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <Text style={styles.headerTitle}>Bus Schedule</Text>
-            <TouchableOpacity 
-              onPress={() => setShowPicker(true)} 
-              style={styles.dateBtn}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="calendar" size={18} color="#fff" />
-              <Text style={styles.dateTxt}>
-                {isToday ? 'Today' : selDate.toLocaleDateString(undefined, { 
-                  weekday: 'short',
-                  month:'short', 
-                  day:'numeric' 
-                })}
-              </Text>
-              <Ionicons name="chevron-down" size={14} color="#fff" />
-            </TouchableOpacity>
-          </View>
-          
-          {!loading && events.length > 0 && (
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <Text style={styles.statNumber}>{events.filter(e => e.type === 'stop').length}</Text>
-                <Text style={styles.statLabel}>Stops</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={styles.statNumber}>{events.filter(e => e.type === 'trip').length}</Text>
-                <Text style={styles.statLabel}>Trips</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={styles.statNumber}>
-                  {events.length > 0 ? formatTime(events[0].time.split(' ')[0]) : '--'}
-                </Text>
-                <Text style={styles.statLabel}>First</Text>
-              </View>
-            </View>
-          )}
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>Bus Schedule</Text>
+          <Text style={styles.headerSubtitle}>Timeline for your assigned bus</Text>
         </View>
-      </Animated.View>
+        <TouchableOpacity style={styles.dateButton} onPress={() => setShowPicker(true)}>
+          <Ionicons name="calendar-outline" size={20} color="#8B0000" />
+          <Text style={styles.dateButtonText}>
+            {isToday ? 'Today' : selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       {showPicker && (
-        <View style={styles.pickerOverlay}>
-          <DateTimePicker
-            value={tempDate}
-            mode="date"
-            display={Platform.OS==='ios'?'inline':'calendar'}
-            onChange={onDatePick}
-            themeVariant="light"
-          />
-        </View>
+        <DateTimePicker value={selectedDate} mode="date" display="default" onChange={onDateChange} />
       )}
 
-      {/* Enhanced content */}
       {loading ? (
-        <View style={styles.center}>
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#2d5a2d" />
-            <Text style={styles.loadingText}>Loading your schedule...</Text>
-          </View>
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color="#8B0000" />
         </View>
       ) : events.length === 0 ? (
-        <View style={styles.center}>
-          <View style={styles.emptyContainer}>
-            <Ionicons name="bus-outline" size={80} color="#e8f5e8" />
-            <Text style={styles.emptyTitle}>No routes scheduled</Text>
-            <Text style={styles.emptySubtitle}>
-              {isToday ? 'No buses running today' : 'No buses scheduled for this date'}
-            </Text>
-            <TouchableOpacity style={styles.retryBtn} onPress={buildTimeline}>
-              <Text style={styles.retryText}>Refresh</Text>
-            </TouchableOpacity>
-          </View>
+        <View style={styles.centerContainer}>
+          <Ionicons name="calendar-clear-outline" size={64} color="#E0E0E0" />
+          <Text style={styles.emptyTitle}>No Schedule Found</Text>
+          <Text style={styles.emptySubtitle}>There are no trips assigned to your bus for this date.</Text>
         </View>
       ) : (
         <FlatList
           data={events}
-          keyExtractor={(_, i) => String(i)}
+          keyExtractor={item => item.key}
           contentContainerStyle={styles.list}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl 
-              refreshing={refreshing} 
-              onRefresh={onRefresh}
-              colors={['#2d5a2d']}
-              tintColor="#2d5a2d"
-            />
-          }
-          renderItem={({item, index}) => {
-            const status = getCurrentStatus(item, index);
-            const isTrip = item.type === 'trip';
-            
-            return (
-              <Animated.View
-                style={[
-                  styles.row,
-                  { 
-                    opacity: fadeAnim,
-                    transform:[{
-                      translateY: fadeAnim.interpolate({
-                        inputRange:[0,1], 
-                        outputRange:[30,0]
-                      })
-                    }] 
-                  }
-                ]}
-              >
-                <View style={styles.rail}>
-                  <View style={[
-                    styles.dot,
-                    status === 'current' && styles.dotCurrent,
-                    status === 'completed' && styles.dotCompleted,
-                    isTrip && styles.dotTrip
-                  ]}>
-                    {status === 'current' && (
-                      <Animated.View style={styles.pulseRing} />
-                    )}
-                  </View>
-                  {index < events.length-1 && (
-                    <View style={[
-                      styles.railLine,
-                      status === 'completed' && styles.railLineCompleted
-                    ]}/>
-                  )}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#8B0000" />}
+          renderItem={({ item, index }) => (
+            <Animated.View style={[styles.timelineRow, { opacity: fadeAnim }]}>
+              <View style={styles.timelineConnector}>
+                <View style={[styles.timelineDot, item.type === 'trip' && styles.tripDot]} />
+                {index < events.length - 1 && <View style={styles.timelineLine} />}
+              </View>
+              <View style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <Text style={styles.timeText}>{item.time}</Text>
+                  {item.duration && <Text style={styles.durationText}>{item.duration}</Text>}
                 </View>
-                
-                <TouchableOpacity 
-                  style={[
-                    styles.card,
-                    status === 'current' && styles.cardCurrent,
-                    isTrip && styles.cardTrip
-                  ]}
-                  activeOpacity={0.95}
-                >
-                  <View style={styles.cardHeader}>
-                    <View style={styles.timeContainer}>
-                      <Text style={[
-                        styles.timeTxt,
-                        status === 'current' && styles.timeCurrentTxt
-                      ]}>
-                        {item.time}
-                      </Text>
-                      {item.duration && (
-                        <Text style={styles.durationTxt}>{item.duration}</Text>
-                      )}
-                    </View>
-                    
-                    <View style={[
-                      styles.badge,
-                      isTrip ? styles.tripBadge : styles.stopBadge,
-                      status === 'current' && styles.badgeCurrent
-                    ]}>
-                      <Ionicons
-                        name={isTrip ? 'bus' : item.label === 'Departure' ? 'play' : 
-                              item.label === 'Final Stop' ? 'flag' : 'location'}
-                        size={12} 
-                        color="#fff"
-                      />
-                      <Text style={styles.badgeTxt}>
-                        {isTrip ? 'TRANSIT' : item.label.toUpperCase()}
-                      </Text>
-                    </View>
+                <Text style={styles.label}>{item.label}</Text>
+                {item.loc && (
+                  <View style={styles.locationRow}>
+                    <Ionicons name="location-outline" size={14} color="#B8860B" />
+                    <Text style={styles.locationText}>{item.loc}</Text>
                   </View>
-                  
-                  <Text style={[
-                    styles.labelTxt,
-                    status === 'current' && styles.labelCurrentTxt
-                  ]}>
-                    {item.label}
-                  </Text>
-                  
-                  {item.loc && (
-                    <View style={styles.locRow}>
-                      <Ionicons 
-                        name={isTrip ? "arrow-forward" : "location"} 
-                        size={14} 
-                        color={status === 'current' ? '#2d5a2d' : '#8fbc8f'} 
-                      />
-                      <Text style={[
-                        styles.locTxt,
-                        status === 'current' && styles.locCurrentTxt
-                      ]}>
-                        {item.loc}
-                      </Text>
-                    </View>
-                  )}
-                  
-                  {status === 'current' && (
-                    <View style={styles.currentIndicator}>
-                      <View style={styles.currentDot} />
-                      <Text style={styles.currentText}>Current</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              </Animated.View>
-            );
-          }}
+                )}
+              </View>
+            </Animated.View>
+          )}
         />
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: '#f8fdf8' 
-  },
-  
-  // Enhanced Header
-  headerContainer: {
-    backgroundColor: '#1a4a1a',
-    paddingTop: Platform.OS === 'ios' ? 50 : 25,
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-  },
-  header: { 
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-  },
-  headerTop: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'space-between',
-    marginBottom: 16
-  },
-  headerTitle: { 
-    color: '#fff', 
-    fontSize: 24, 
-    fontWeight: '800',
-    letterSpacing: 0.5
-  },
-  dateBtn: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: 'rgba(255,255,255,0.15)', 
-    paddingHorizontal: 14,
-    paddingVertical: 10, 
-    borderRadius: 25,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)'
-  },
-  dateTxt: { 
-    color: '#fff', 
-    marginHorizontal: 8, 
-    fontWeight: '600',
-    fontSize: 15
-  },
-  
-  // Stats Row
-  statsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 16,
-    paddingVertical: 12,
-    marginTop: 8
-  },
-  statItem: {
-    alignItems: 'center'
-  },
-  statNumber: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700'
-  },
-  statLabel: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 12,
-    fontWeight: '500',
-    marginTop: 2
-  },
-
-  // Picker
-  pickerOverlay: {
-    backgroundColor: '#fff',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-
-  // Center states
-  center: { 
-    flex: 1, 
-    alignItems: 'center', 
-    justifyContent: 'center',
-    paddingHorizontal: 40
-  },
-  loadingContainer: {
-    alignItems: 'center'
-  },
-  loadingText: {
-    marginTop: 16,
-    color: '#607d8b',
-    fontSize: 16,
-    fontWeight: '500'
-  },
-  emptyContainer: {
-    alignItems: 'center'
-  },
-  emptyTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#2d5a2d',
-    marginTop: 20,
-    marginBottom: 8
-  },
-  emptySubtitle: {
-    fontSize: 16,
-    color: '#8fbc8f',
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 24
-  },
-  retryBtn: {
-    backgroundColor: '#2d5a2d',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 25,
-    elevation: 2
-  },
-  retryText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 16
-  },
-
-  // Enhanced Timeline
-  list: { 
-    paddingHorizontal: 20,
-    paddingVertical: 24
-  },
-  row: { 
-    flexDirection: 'row', 
-    marginBottom: 16
-  },
-  rail: { 
-    width: 32, 
-    alignItems: 'center',
-    marginRight: 16
-  },
-  dot: { 
-    width: 16, 
-    height: 16, 
-    borderRadius: 8, 
-    backgroundColor: '#e0e0e0',
-    marginBottom: 8,
-    position: 'relative',
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  dotCurrent: {
-    backgroundColor: '#4caf50',
-    width: 20,
-    height: 20,
-    borderRadius: 10
-  },
-  dotCompleted: {
-    backgroundColor: '#2d5a2d'
-  },
-  dotTrip: {
-    backgroundColor: '#ff9800'
-  },
-  pulseRing: {
-    position: 'absolute',
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(76, 175, 80, 0.3)',
-    zIndex: -1
-  },
-  railLine: { 
-    flex: 1, 
-    width: 3, 
-    backgroundColor: '#e8e8e8',
-    borderRadius: 1.5
-  },
-  railLineCompleted: {
-    backgroundColor: '#c8e6c9'
-  },
-
-  // Enhanced Cards
-  card: { 
-    flex: 1, 
-    backgroundColor: '#fff', 
-    paddingHorizontal: 20,
-    paddingVertical: 18, 
-    borderRadius: 20, 
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    borderLeftWidth: 4,
-    borderLeftColor: '#e8f5e8'
-  },
-  cardCurrent: {
-    borderLeftColor: '#4caf50',
-    backgroundColor: '#f8fff8',
-    elevation: 6
-  },
-  cardTrip: {
-    borderLeftColor: '#ff9800'
-  },
-  cardHeader: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'flex-start', 
-    marginBottom: 12
-  },
-  timeContainer: {
-    flex: 1
-  },
-  timeTxt: { 
-    fontSize: 16, 
-    fontWeight: '700', 
-    color: '#2d5a2d',
-    letterSpacing: 0.3
-  },
-  timeCurrentTxt: {
-    color: '#1b5e20',
-    fontSize: 17
-  },
-  durationTxt: {
-    fontSize: 12,
-    color: '#8fbc8f',
-    fontWeight: '500',
-    marginTop: 2
-  },
-  badge: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    paddingHorizontal: 10, 
-    paddingVertical: 6, 
-    borderRadius: 16,
-    elevation: 1
-  },
-  tripBadge: { 
-    backgroundColor: '#ff9800' 
-  },
-  stopBadge: { 
-    backgroundColor: '#4caf50' 
-  },
-  badgeCurrent: {
-    backgroundColor: '#2d5a2d'
-  },
-  badgeTxt: { 
-    color: '#fff', 
-    fontSize: 10, 
-    fontWeight: '700', 
-    marginLeft: 4,
-    letterSpacing: 0.5
-  },
-  labelTxt: { 
-    fontSize: 18, 
-    fontWeight: '700', 
-    color: '#2d5a2d', 
-    marginBottom: 8,
-    letterSpacing: 0.2
-  },
-  labelCurrentTxt: {
-    color: '#1b5e20'
-  },
-  locRow: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    marginTop: 4,
-    paddingHorizontal: 2
-  },
-  locTxt: { 
-    marginLeft: 6, 
-    fontSize: 15, 
-    color: '#8fbc8f',
-    fontWeight: '500',
-    lineHeight: 20,
-    flex: 1
-  },
-  locCurrentTxt: {
-    color: '#2d5a2d',
-    fontWeight: '600'
-  },
-  currentIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#e8f5e8'
-  },
-  currentDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#4caf50',
-    marginRight: 8
-  },
-  currentText: {
-    color: '#4caf50',
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5
-  }
+    container: { flex: 1, backgroundColor: '#FFFFFF' },
+    header: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 20,
+      paddingVertical: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: '#F0F0F0',
+      backgroundColor: '#fff',
+    },
+    headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#8B0000' },
+    headerSubtitle: { fontSize: 14, color: '#A0522D' },
+    dateButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#FFF5F5',
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      borderRadius: 20,
+    },
+    dateButtonText: { color: '#8B0000', fontWeight: '600', marginLeft: 8 },
+    centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
+    emptyTitle: { marginTop: 16, fontSize: 20, fontWeight: '600', color: '#333' },
+    emptySubtitle: { marginTop: 8, fontSize: 14, color: '#999', textAlign: 'center' },
+    list: { padding: 20 },
+    timelineRow: {
+      flexDirection: 'row',
+    },
+    timelineConnector: {
+      alignItems: 'center',
+      width: 30,
+      marginRight: 10,
+    },
+    timelineDot: {
+      width: 14,
+      height: 14,
+      borderRadius: 7,
+      backgroundColor: '#A0522D',
+      position: 'absolute',
+      top: 18,
+    },
+    tripDot: {
+      backgroundColor: '#B8860B',
+    },
+    timelineLine: {
+      flex: 1,
+      width: 2,
+      backgroundColor: '#F0F0F0',
+    },
+    card: {
+      flex: 1,
+      backgroundColor: '#fff',
+      borderRadius: 12,
+      padding: 16,
+      marginBottom: 16,
+      borderWidth: 1,
+      borderColor: '#FFF5F5',
+    },
+    cardHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    timeText: {
+      fontSize: 16,
+      fontWeight: 'bold',
+      color: '#8B0000',
+    },
+    durationText: {
+      fontSize: 12,
+      color: '#999',
+      fontStyle: 'italic',
+    },
+    label: {
+      fontSize: 18,
+      fontWeight: '600',
+      color: '#333',
+      marginBottom: 6,
+    },
+    locationRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginTop: 4,
+    },
+    locationText: {
+      marginLeft: 6,
+      color: '#B8860B',
+      fontSize: 14,
+    },
 });

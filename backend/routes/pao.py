@@ -2,67 +2,63 @@ from flask import Blueprint, request, jsonify, g
 from datetime import datetime
 from routes.auth import require_role
 from models.schedule import Trip, StopTime
+from flask import current_app
+import traceback
+from models.announcement import Announcement
+from models.ticket_stop import TicketStop 
+from datetime import datetime
+from flask import current_app
+import traceback
+from db import db
+from models.user import User 
+from datetime import datetime, timezone
+from models.ticket_sale import TicketSale
+from flask import url_for
+
+from dateutil import parser as dtparse
+from sqlalchemy import func
+
+
 
 pao_bp = Blueprint('pao', __name__, url_prefix='/pao')
+
+from models.bus import Bus
+
+
+
 
 @pao_bp.route('/bus-trips', methods=['GET'])
 @require_role('pao')
 def pao_bus_trips():
-    """
-    GET /pao/bus-trips?date=YYYY-MM-DD
-    Returns all trips for the PAO’s assigned bus on that date.
-    """
     bus_id = g.user.assigned_bus_id
     date_str = request.args.get('date')
+    
     if not bus_id or not date_str:
-        return jsonify(error="assigned_bus_id and date are required"), 400
+        return jsonify(error="PAO is not assigned to a bus or date is missing"), 400
 
-    try:
-        svc_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-    except ValueError:
-        return jsonify(error="date must be YYYY-MM-DD"), 400
-
-    trips = (
-        Trip.query
-        .filter_by(bus_id=bus_id, service_date=svc_date)
-        .order_by(Trip.start_time.asc())
-        .all()
-    )
-
-    return jsonify([
-        {
-            "id":         t.id,
-            "number":     t.number,
-            "start_time": t.start_time.strftime("%H:%M"),
-            "end_time":   t.end_time.strftime("%H:%M"),
-        }
-        for t in trips
-    ]), 200
+    svc_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    trips = Trip.query.filter_by(bus_id=bus_id, service_date=svc_date).order_by(Trip.start_time.asc()).all()
+    
+    result = [{
+        "id": t.id, "number": t.number,
+        "start_time": t.start_time.strftime("%H:%M"), "end_time": t.end_time.strftime("%H:%M"),
+    } for t in trips]
+    return jsonify(result), 200
 
 @pao_bp.route('/stop-times', methods=['GET'])
-@require_role('pao')
+@require_role('pao') # ✅ Re-enable the decorator
 def pao_stop_times():
-    """
-    GET /pao/stop-times?trip_id=<int>
-    Returns the stop list for that trip.
-    """
     trip_id = request.args.get('trip_id', type=int)
     if not trip_id:
         return jsonify(error="trip_id is required"), 400
 
-    sts = (
-        StopTime.query
-        .filter_by(trip_id=trip_id)
-        .order_by(StopTime.seq.asc())
-        .all()
-    )
-    return jsonify([
-        {
-            "stop_name":   st.stop_name,
-            "arrive_time": st.arrive_time.strftime("%H:%M"),
-            "depart_time": st.depart_time.strftime("%H:%M")
-        } for st in sts
-    ]), 200
+    sts = StopTime.query.filter_by(trip_id=trip_id).order_by(StopTime.seq.asc()).all()
+    
+    return jsonify([{
+        "stop_name": st.stop_name,
+        "arrive_time": st.arrive_time.strftime("%H:%M"),
+        "depart_time": st.depart_time.strftime("%H:%M")
+    } for st in sts]), 200
 
 
 @pao_bp.route('/tickets', methods=['POST'])
@@ -122,7 +118,7 @@ def create_ticket():
         # ─── build QR URL & final response ────────────────────
         qr_url = url_for(
             'static',
-            filename=f"qr/{_png_name(base, p=='discount')}",
+            filename=f"qr/{ref}.png",
             _external=True
         )
         return jsonify({
@@ -140,12 +136,15 @@ def create_ticket():
         current_app.logger.exception("!! create_ticket unexpected error")
         traceback.print_exc()
         return jsonify(error=str(e)), 500
+
+
 @pao_bp.route('/stops', methods=['GET'])
-@require_role('pao')    # or commuter, depending on who needs to load stops
+@require_role('pao')
 def list_stops():
-    # return an array of {id, name} sorted by your seq field
     rows = TicketStop.query.order_by(TicketStop.seq).all()
     return jsonify([{"id": r.id, "name": r.stop_name, "seq": r.seq} for r in rows]), 200
+
+
 
 @pao_bp.route('/commuters', methods=['GET'])
 @require_role('pao')
@@ -177,40 +176,86 @@ def live_user_locations():
     ]
     return jsonify(sample), 200
 
-@pao_bp.route('/broadcast', methods=['POST'])
-@require_role('pao')
+# ── new helper, reuse everywhere we need the current bus
+def _current_bus_id() -> int | None:
+    return getattr(g.user, "assigned_bus_id", None)
+
+# --------------------------------------------------------------------
+@pao_bp.route("/broadcast", methods=["POST"])
+@require_role("pao")
 def broadcast():
-    data = request.get_json() or {}
-    message = data.get('message', '').strip()
+    """
+    Create an announcement visible only to PAOs (and commuters) on *this* bus.
+    """
+    bus_id = _current_bus_id()
+    if not bus_id:
+        return jsonify(error="PAO has no assigned bus"), 400      # <- guard early
+    bus_row        = Bus.query.get(bus_id)
+    bus_identifier = (bus_row.identifier or f"bus-{bus_id:02d}") if bus_row else f
+    data     = request.get_json() or {}
+    message  = (data.get("message") or "").strip()
     if not message:
-        return jsonify({"error": "message is required"}), 400
+        return jsonify(error="message is required"), 400
 
-    ann = Announcement(
-        message    = message,
-        created_by = g.user.id
-    )
-    db.session.add(ann)
-    db.session.commit()
+    try:
+        ann = Announcement(
+            message    = message,
+            created_by = g.user.id,          # FK to users.id
+        )
+        db.session.add(ann)
+        db.session.commit()
 
-    return jsonify({
-        "id":         ann.id,
-        "message":    ann.message,
-        "timestamp":  ann.timestamp.isoformat(),
-        "created_by": ann.created_by
-    }), 201
+        return jsonify({
+            "id":          ann.id,
+            "message":     ann.message,
+            "timestamp":   ann.timestamp.replace(tzinfo=timezone.utc).isoformat(),
+            "created_by":  ann.created_by,
+            "author_name": f"{g.user.first_name} {g.user.last_name}",
+            "bus":         bus_identifier,
+        }), 201
 
-@pao_bp.route('/broadcast', methods=['GET'])
-@require_role('pao')
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("broadcast failed")
+        return jsonify(error="internal server error"), 500
+
+
+# --------------------------------------------------------------------
+@pao_bp.route("/broadcast", methods=["GET"])
+@require_role("pao")
 def list_broadcasts():
-    anns = Announcement.query.order_by(Announcement.timestamp.desc()).all()
-    return jsonify([
-        {
-            "id":         a.id,
-            "message":    a.message,
-            "timestamp":  a.timestamp.isoformat(),
-            "created_by": a.created_by
-        } for a in anns
-    ]), 200
+    """
+    Return only the announcements whose author is assigned to *my* bus.
+    """
+    bus_id = _current_bus_id()
+    if not bus_id:
+        return jsonify(error="PAO has no assigned bus"), 400
+
+    rows = (
+        db.session.query(
+            Announcement,
+            User.first_name,
+            User.last_name,
+            Bus.identifier.label("bus_identifier")
+        )
+        .join(User, Announcement.created_by == User.id)
+        .join(Bus, User.assigned_bus_id == Bus.id)
+        .filter(User.assigned_bus_id == _current_bus_id())
+        .order_by(Announcement.timestamp.desc())
+        .all()
+    )
+
+    anns = [{
+        "id":          ann.id,
+        "message":     ann.message,
+        "timestamp":   ann.timestamp.replace(tzinfo=timezone.utc).isoformat(),
+        "created_by":  ann.created_by,
+        "author_name": f"{first} {last}",
+        "bus":         bus_identifier,
+    } for ann, first, last, bus_identifier in rows]
+
+    return jsonify(anns), 200
+
 
 @pao_bp.route('/validate-fare', methods=['POST'])
 @require_role('pao')
@@ -313,6 +358,7 @@ def list_tickets():
     out = []
     for t in qs:
         out.append({
+            "id":           t.id,
             "referenceNo": t.reference_no,
             "commuter":    f"{t.user.first_name} {t.user.last_name}",
             "date":        t.created_at.strftime("%B %d, %Y"),
@@ -348,4 +394,80 @@ def mark_ticket_paid(ticket_id):
         return jsonify(id=ticket.id, paid=bool(ticket.paid)), 200
     except Exception as e:
         current_app.logger.exception("!! mark_ticket_paid commit failed")
+        return jsonify(error=str(e)), 500
+
+
+# ─── Read a single ticket (receipt) ───────────────────────
+@pao_bp.route('/tickets/<int:ticket_id>', methods=['GET'])
+@require_role('pao')
+def get_ticket(ticket_id):
+    """
+    Return full details for one ticket (used as a receipt).
+    """
+    ticket = TicketSale.query.get(ticket_id)
+    if not ticket:
+        return jsonify(error="ticket not found"), 404
+
+    # build the same shape as list_tickets but full detail
+    return jsonify({
+        "id":           ticket.id,
+        "referenceNo":  ticket.reference_no,
+        "commuter":     f"{ticket.user.first_name} {ticket.user.last_name}",
+        "date":         ticket.created_at.strftime("%B %d, %Y"),
+        "time":         ticket.created_at.strftime("%I:%M %p").lstrip("0").lower(),
+        "fare":         f"{float(ticket.price):.2f}",
+        "passengerType": ticket.passenger_type,
+        "paid":         bool(ticket.paid),
+        "busId":        ticket.bus_id,
+        "ticketUuid":   ticket.ticket_uuid
+    }), 200
+
+@pao_bp.route('/tickets/<int:ticket_id>', methods=['PUT'])
+@require_role('pao')
+def update_ticket(ticket_id):
+    data   = request.get_json(silent=True) or {}
+    ticket = TicketSale.query.get(ticket_id)
+    if not ticket:
+        return jsonify(error="ticket not found"), 404
+
+    # passenger / commuter
+    if name := data.get("commuter_name"):
+        user = (
+            db.session.query(User)
+            .filter(db.func.trim(db.func.concat(User.first_name, " ", User.last_name)) == name.strip())
+            .first()
+        )
+        if not user:
+            return jsonify(error="commuter not found"), 400
+        ticket.user_id = user.id
+
+    # datetime
+    if iso := data.get("created_at"):
+        try:
+            ticket.created_at = dtparse.parse(iso)
+        except Exception:
+            return jsonify(error="invalid created_at"), 400
+
+    # fare
+    if "fare" in data:
+        try:
+            ticket.price = float(data["fare"])
+        except ValueError:
+            return jsonify(error="invalid fare"), 400
+
+    # passenger type
+    if pt := data.get("passenger_type"):
+        if pt not in ("regular", "discount"):
+            return jsonify(error="invalid passenger_type"), 400
+        ticket.passenger_type = pt
+
+    # paid flag
+    if "paid" in data:
+        ticket.paid = bool(data["paid"])
+
+    try:
+        db.session.commit()
+        return jsonify(success=True), 200
+    except Exception as e:
+        db.session.rollback()
         return jsonify(error=str(e)), 500

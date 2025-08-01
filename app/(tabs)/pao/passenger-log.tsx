@@ -1,5 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ExpoNotify from 'expo-notifications';
 import { useRouter } from 'expo-router';
 import mqtt, { MqttClient } from 'mqtt';
 import React, { useEffect, useRef, useState } from 'react';
@@ -16,6 +17,17 @@ import {
   View,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+
+ExpoNotify.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,   // ← newly required
+    shouldShowList: true,     // ← newly required
+  }),
+});
+
 
 /* ───────── CONFIG ───────── */
 const MQTT_URL = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
@@ -42,8 +54,11 @@ const COLORS = {
 const { width } = Dimensions.get('window');
 
 /* helpers that include busId */
-const tBusTelem = (b: string) => `device/${b}/telemetry`;
-const tPaoUp = (b: string) => `pao/${b}/passenger/updates`;
+const tBusTelem = (b?: string) =>
+    b ? `device/${b}/telemetry` : 'device/telemetry';
+  
+  const tPaoUp = (b?: string) =>
+    b ? `pao/${b}/passenger/updates` : 'pao/passenger/updates';
 const tAckToBus = (b: string) => `pao/${b}/passenger/ack`;
 const tAckToComm = (b: string) => `commuter/${b}/livestream/ack`;
 
@@ -248,20 +263,55 @@ export default function PassengerLogScreen() {
     const n = parseInt(raw, 10);
     return isFinite(n) ? `bus-${n.toString().padStart(2, '0')}` : raw;
   };
-
   const handleCardPress = (request: RequestItem) => {
+    // Set the tapped request as the one to be acknowledged
     setSelReq(request);
+  
+    // Update the list to visually show which request is selected
+    setRequests(prev =>
+      prev.map(r => {
+        // If this is the request that was just tapped, set its status
+        if (r.id === request.id) {
+          return { ...r, status: 'Waiting for Acknowledgement' };
+        }
+        // If another request was already selected, reset its status back to 'Waiting'
+        if (r.status === 'Waiting for Acknowledgement') {
+          return { ...r, status: 'Waiting' };
+        }
+        // Otherwise, leave the request as is
+        return r;
+      })
+    );
   };
 
   const acknowledge = () => {
     if (selReq) {
-      setRequests(prev => prev.map(r => 
-        r.id === selReq.id ? { ...r, status: 'Acknowledged' } : r
-      ));
+      // Update the status in the local state array
+      setRequests(prev =>
+        prev.map(r =>
+          r.id === selReq.id ? { ...r, status: 'Acknowledged' } : r
+        )
+      );
+
+      // Publish the acknowledgement message via MQTT
+      if (mqttRef.current && busId) {
+        mqttRef.current.publish(
+          tAckToComm(busId),
+          JSON.stringify({ ok: true, id: selReq.id, ts: Date.now() })
+        );
+      }
+
+      // Clear the current selection
       setSelReq(null);
     }
   };
-
+  useEffect(() => {
+    Animated.spring(tabSlideAnim, {
+      toValue: tab === 'location' ? 0 : 1,
+      useNativeDriver: false, // translateX is not compatible with native driver on all components
+      bounciness: 8,
+    }).start();
+  }, [tab]);
   /* ----- 1) load busId once ----- */
   useEffect(() => {
     AsyncStorage.getItem('@assignedBusId')
@@ -290,8 +340,17 @@ export default function PassengerLogScreen() {
 
     client.on('connect', () => {
       console.log('[DEBUG] MQTT connected for', busId);
-      console.log('[DEBUG] subscribing →', tBusTelem(busId), tPaoUp(busId));
-      client.subscribe([tBusTelem(busId), tPaoUp(busId)], { qos: 1 });
+      console.log('[DEBUG] subscribing →', tBusTelem(busId), tPaoUp(busId), tPaoUp(), tPaoUp(busId));
+      client.subscribe(
+        [
+          tBusTelem(),            // device/telemetry          ← generic
+          tBusTelem(busId),       // device/bus-01/telemetry   ← bus-scoped
+          tPaoUp(),               // p​ao/passenger/updates     ← generic
+          tPaoUp(busId)           // p​ao/bus-01/passenger/updates
+        ],
+        { qos: 1 }
+      );
+      
     });
 
     client.on('message', (topic, raw) => {
@@ -301,8 +360,8 @@ export default function PassengerLogScreen() {
       } catch {
         return;
       }
-
-      if (topic === tBusTelem(busId)) {
+  
+      if (topic === tBusTelem() || topic === tBusTelem(busId)) {
         if (msg.lat != null && msg.lng != null) {
           const loc = { latitude: msg.lat, longitude: msg.lng };
           setBusLoc(loc);
@@ -310,34 +369,44 @@ export default function PassengerLogScreen() {
         }
         if (typeof msg.people === 'number') setOccupied(msg.people);
       }
-
-      if (topic === tPaoUp(busId)) {
+  
+      if (topic === tPaoUp() || topic === tPaoUp(busId)) {
         if (msg.type === 'location') {
-          const upd: Passenger = { id: msg.id, location: { latitude: msg.lat, longitude: msg.lng } };
-
-          // Detect if passenger has moved sufficiently
-          setPassengers(p => {
-            const idx = p.findIndex(x => x.id === upd.id);
-            if (idx !== -1) {
-              // Check if passenger is far enough from bus
-              const dist = Math.sqrt(
-                Math.pow(upd.location.latitude - busLoc?.latitude!, 2) +
-                  Math.pow(upd.location.longitude - busLoc?.longitude!, 2)
-              );
-              if (dist > 0.01) {
-                // Remove passenger if moving far enough
-                p.splice(idx, 1);
-              } else {
-                p[idx] = upd;
-              }
-            } else {
-              return [...p, upd]; // Add new passenger if not already in list
+          const upd: Passenger = { id: String(msg.id), location: { latitude: msg.lat, longitude: msg.lng } };
+  
+          // ✅ IMMUTABLE UPDATE LOGIC TO PREVENT INFINITE LOOPS
+          setPassengers(prevPassengers => {
+            const idx = prevPassengers.findIndex(p => p.id === upd.id);
+  
+            if (idx !== -1) { // Passenger exists, so we update their location
+              const newPassengers = [...prevPassengers];
+              newPassengers[idx] = upd;
+              return newPassengers;
+            } else { // This is a new passenger
+              return [...prevPassengers, upd];
             }
-            return [...p];
           });
+          
         } else if (msg.type === 'request') {
           const t = msg.timestamp ? new Date(msg.timestamp) : new Date();
-          setRequests(r => [...r, { id: msg.id, time: t, status: 'Waiting' }]);
+          const newRequest = { id: String(msg.id), time: t, status: 'Waiting' as const };
+  
+          setRequests(existingRequests => {
+            const isDuplicate = existingRequests.some(req => req.id === newRequest.id);
+            if (isDuplicate) {
+              return existingRequests;
+            }
+            ExpoNotify.scheduleNotificationAsync({
+              content: {
+                title: '🚍 New Pickup Request',
+                body: `Commuter #${newRequest.id} is requesting to be picked up.`,
+                data: { type: 'pickup_request', commuterId: newRequest.id },
+              },
+              trigger: null, // Show immediately
+            });
+            
+            return [...existingRequests, newRequest];
+          });
         }
       }
     });
@@ -364,168 +433,151 @@ export default function PassengerLogScreen() {
       </View>
     );
   }
+/* ----- 4) Enhanced UI ----- */
+return (
+  <SafeAreaView style={styles.container}>
+    <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
 
-  /* ----- 4) Enhanced UI ----- */
-  return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
+    {/* ENHANCED HEADER */}
+    <View style={styles.header}>
+      <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <Ionicons name="chevron-back" size={24} color={COLORS.white} />
+      </TouchableOpacity>
+      <View style={styles.headerContent}>
+        <Text style={styles.headerTitle}>Bus {busId?.replace('bus-', '').toUpperCase()}</Text>
+        <Text style={styles.headerSubtitle}>Passenger Monitoring</Text>
+      </View>
+      <View style={styles.headerIcon}>
+        <MaterialCommunityIcons name="bus" size={28} color={COLORS.white} />
+      </View>
+    </View>
 
-      {/* ENHANCED HEADER */}
-      <AnimatedCard style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color={COLORS.white} />
-        </TouchableOpacity>
-        <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>Bus {busId?.toUpperCase()}</Text>
-          <Text style={styles.headerSubtitle}>Passenger Monitoring</Text>
-        </View>
-        <View style={styles.headerIcon}>
-          <MaterialCommunityIcons name="bus" size={28} color={COLORS.white} />
-        </View>
-      </AnimatedCard>
+    {/* ENHANCED TAB SWITCH */}
+    <View style={styles.tabContainer}>
+      <Animated.View
+      pointerEvents="none"
+        style={[styles.tabIndicator, {
+          transform: [{
+            translateX: tabSlideAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, (width - 48) / 2],
+            }),
+          }],
+        }]}
+      />
+      <TouchableOpacity style={styles.tabButton} onPress={() => setTab('location')}>
+        <Ionicons name="location" size={20} color={tab === 'location' ? COLORS.white : COLORS.textSecondary} />
+        <Text style={[styles.tabText, tab === 'location' && styles.tabTextActive]}>Location</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.tabButton} onPress={() => setTab('info')}>
+        <Ionicons name="information-circle" size={20} color={tab === 'info' ? COLORS.white : COLORS.textSecondary} />
+        <Text style={[styles.tabText, tab === 'info' && styles.tabTextActive]}>Information</Text>
+      </TouchableOpacity>
+    </View>
 
-      {/* ENHANCED TAB SWITCH */}
-      <AnimatedCard style={styles.tabContainer} delay={100}>
-        <View style={styles.tabBackground}>
-          <Animated.View
-            style={[styles.tabIndicator, {
-              transform: [{
-                translateX: tabSlideAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [0, width / 2 - 32],
-                }),
-              }],
-            }]}
-          />
-        </View>
-        <TouchableOpacity
-          style={styles.tabButton}
-          onPress={() => setTab('location')}
-        >
-          <Ionicons
-            name="location"
-            size={20}
-            color={tab === 'location' ? COLORS.white : COLORS.textSecondary}
-          />
-          <Text style={[styles.tabText, tab === 'location' && styles.tabTextActive]}>
-            Location
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.tabButton}
-          onPress={() => setTab('info')}
-        >
-          <Ionicons
-            name="information-circle"
-            size={20}
-            color={tab === 'info' ? COLORS.white : COLORS.textSecondary}
-          />
-          <Text style={[styles.tabText, tab === 'info' && styles.tabTextActive]}>
-            Information
-          </Text>
-        </TouchableOpacity>
-      </AnimatedCard>
-
-      {tab === 'location' ? (
-        <>
-          <AnimatedCard style={styles.mapCard} delay={200}>
-            <MapView
-              ref={mapRef}
-              style={styles.map}
-              provider={PROVIDER_GOOGLE}
-              initialRegion={{ ...busLoc, latitudeDelta: 0.05, longitudeDelta: 0.05 }}
-            >
-              <Marker coordinate={busLoc}>
-                <View style={styles.busMarker}>
-                  <MaterialCommunityIcons name="bus" size={24} color={COLORS.white} />
+    {/* --- CONDITIONAL CONTENT BASED ON TAB --- */}
+    {tab === 'location' ? (
+      <View style={{ flex: 1 }}> 
+        <AnimatedCard style={styles.mapCard} delay={200}>
+          <MapView
+            ref={mapRef}
+            style={styles.map}
+            provider={PROVIDER_GOOGLE}
+            initialRegion={{ ...busLoc, latitudeDelta: 0.05, longitudeDelta: 0.05 }}
+          >
+            <Marker coordinate={busLoc}>
+              <View style={styles.busMarker}>
+                <MaterialCommunityIcons name="bus" size={24} color={COLORS.white} />
+              </View>
+            </Marker>
+            {passengers.map(p => (
+              <Marker key={p.id} coordinate={p.location}>
+                <View style={styles.passengerMarker}>
+                  <PulsingDot size={12} color={COLORS.accent} />
                 </View>
               </Marker>
-              {passengers.map(p => (
-                <Marker key={p.id} coordinate={p.location}>
-                  <View style={styles.passengerMarker}>
-                    <PulsingDot size={12} color={COLORS.accent} />
-                  </View>
-                </Marker>
-              ))}
-            </MapView>
-          </AnimatedCard>
+            ))}
+          </MapView>
+        </AnimatedCard>
 
-          <AnimatedCard style={styles.statsCard} delay={300}>
-            <EnhancedStat
-              label="Waiting Passengers"
-              value={passengers.length}
-              icon="people"
-            />
-            <View style={styles.statsDivider} />
-            <EnhancedStat
-              label="Bus Occupancy"
-              value={occupied}
-              icon="bus"
-            />
-            <View style={styles.statsDivider} />
-            <EnhancedStat
-              label="New Requests"
-              value={requests.filter(r => r.status === 'Waiting').length}
-              icon="notifications"
-              danger={requests.some(r => r.status === 'Waiting')}
-            />
-          </AnimatedCard>
-        </>
-      ) : (
-        <>
+        <AnimatedCard style={styles.statsCard} delay={300}>
+          <EnhancedStat label="Waiting Passengers" value={passengers.length} icon="people" />
+          <View style={styles.statsDivider} />
+          <EnhancedStat label="Bus Occupancy" value={occupied} icon="bus" />
+          <View style={styles.statsDivider} />
+          <EnhancedStat
+            label="New Requests"
+            value={requests.filter(r => r.status === 'Waiting').length}
+            icon="notifications"
+            danger={requests.some(r => r.status === 'Waiting')}
+          />
+        </AnimatedCard>
+      </View>
+    ) : (
+      <>
+        {/* INFO TAB CONTENT */}
+        {requests.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="notifications-off-outline" size={64} color={COLORS.light} />
+            <Text style={styles.emptyTitle}>No New Requests</Text>
+            <Text style={styles.emptySubtitle}>Passenger pickup requests will appear here.</Text>
+          </View>
+        ) : (
           <ScrollView contentContainerStyle={styles.infoScrollContainer} showsVerticalScrollIndicator={false}>
             {[...requests]
-              .sort((a, b) => a.time.getTime() - b.time.getTime())
+              .sort((a, b) => b.time.getTime() - a.time.getTime()) // Show newest first
               .map((r, index) => (
                 <AnimatedCard key={r.id} delay={index * 100}>
                   <TouchableOpacity
-                    style={[styles.requestCard, r.status === 'Waiting for Acknowledgement' && styles.requestCardSelected]}
+                    style={[styles.requestCard, selReq?.id === r.id && styles.requestCardSelected]}
                     onPress={() => handleCardPress(r)}
                     activeOpacity={0.8}
                   >
                     <View style={styles.requestHeader}>
-                      <Text style={styles.requestId}>Commuter #{r.id}</Text>
-                      <View style={[styles.statusBadge, r.status === 'Waiting' && styles.statusWaiting]}>
-                        <Text style={[styles.statusText, r.status === 'Waiting' && styles.statusTextWaiting]}>
-                          {r.status === 'Waiting' ? 'New Request' : r.status}
+                      <Text style={styles.requestId}>Commuter #{r.id.padStart(2, '0')}</Text>
+                      <View style={[
+                        styles.statusBadge,
+                        r.status === 'Waiting' && styles.statusWaiting,
+                        r.status === 'Acknowledged' && styles.statusAcknowledged
+                      ]}>
+                        <Text style={[
+                          styles.statusText,
+                          r.status === 'Waiting' && styles.statusTextWaiting,
+                          r.status === 'Acknowledged' && styles.statusTextAcknowledged
+                        ]}>
+                          {r.status}
                         </Text>
                       </View>
                     </View>
-                    <View style={styles.requestDetails}>
-                      <View style={styles.requestDetailRow}>
-                        <Ionicons name="calendar" size={16} color={COLORS.textSecondary} />
-                        <Text style={styles.requestDetailText}>
-                          {r.time.toLocaleDateString()}
-                        </Text>
-                      </View>
-                      <View style={styles.requestDetailRow}>
-                        <Ionicons name="time" size={16} color={COLORS.textSecondary} />
-                        <Text style={styles.requestDetailText}>
-                          {r.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-                        </Text>
-                      </View>
+                    <View style={styles.requestTimeContainer}>
+                      <Text style={styles.requestTimeText}>
+                        {r.time.toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}
+                      </Text>
+                      <Text style={styles.requestTimeText}>
+                        {r.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                      </Text>
                     </View>
                   </TouchableOpacity>
                 </AnimatedCard>
               ))}
           </ScrollView>
+        )}
 
-          <AnimatedCard style={styles.acknowledgeContainer} delay={200}>
-            <AnimatedButton
-              onPress={acknowledge}
-              disabled={!selReq}
-              style={styles.acknowledgeButtonContainer}
-            >
-              <Ionicons name="checkmark-circle" size={24} color={COLORS.white} />
-              <Text style={styles.acknowledgeButtonText}>
-                {selReq ? 'ACKNOWLEDGE REQUEST' : 'SELECT A REQUEST'}
-              </Text>
-            </AnimatedButton>
-          </AnimatedCard>
-        </>
-      )}
-    </SafeAreaView>
-  );
+        <View style={styles.acknowledgeContainer}>
+          <AnimatedButton
+            onPress={acknowledge}
+            disabled={!selReq || selReq.status !== 'Waiting for Acknowledgement'}
+          >
+            <Ionicons name="checkmark-circle" size={24} color={COLORS.white} />
+            <Text style={styles.acknowledgeButtonText}>
+              {selReq ? `ACKNOWLEDGE #${selReq.id.padStart(2, '0')}` : 'SELECT A REQUEST'}
+            </Text>
+          </AnimatedButton>
+        </View>
+      </>
+    )}
+  </SafeAreaView>
+);
 }
 
 
@@ -535,7 +587,42 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  
+  cardDate:          { fontSize:13, fontWeight:'600', color:COLORS.text },
+cardTime:          { fontSize:13, fontWeight:'600', color:COLORS.text },
+cardId:            { fontSize:22, fontWeight:'800', color:COLORS.primary },
+emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    paddingBottom: 120,
+  },
+  emptyTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: COLORS.primary,
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  emptySubtitle: {
+    fontSize: 16,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  requestTimeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.surface,
+    paddingTop: 12,
+  },
+  requestTimeText: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    fontWeight: '500',
+  },
   // Loading states
   loadingContainer: {
     flex: 1,
@@ -610,6 +697,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: COLORS.white,
     padding: 4,
+    overflow: 'hidden',
     flexDirection: 'row',
     shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 2 },
@@ -626,11 +714,15 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   tabIndicator: {
-    width: (width - 48) / 2,
-    height: '100%',
-    backgroundColor: COLORS.primary,
-    borderRadius: 12,
-  },
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      width: (width - 48) / 2,
+      height: '100%',
+      backgroundColor: COLORS.primary,
+      borderRadius: 12,
+      zIndex: -1,          // ① ← sits under the buttons
+    },
   tabButton: {
     flex: 1,
     flexDirection: 'row',

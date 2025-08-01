@@ -18,7 +18,7 @@ pluginManagement {
 }
 
 plugins {
-  id("com.facebook.react.settings")
+  id("com.facebook.react.rootproject")
   id("expo-autolinking-settings")
 }
 

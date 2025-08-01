@@ -1,9 +1,10 @@
-// app/pao/dashboard.tsx
+//app/(tabs)/pao/dashboard.tsx
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import mqtt, { MqttClient } from 'mqtt';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,77 +16,141 @@ import {
   View,
 } from 'react-native';
 
-/* ───────────────────────── TYPES ───────────────────────── */
+/* ───────────────────────── CONFIG & TYPES ───────────────────────── */
+const BACKEND = 'http://192.168.1.7:5000';
+const MQTT_URL = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
+const MQTT_USER = 'vanrodolf';
+const MQTT_PASS = 'Vanrodolf123.';
+
 interface LiveStats {
-  inside : number;
+  inside: number;
   entries: number;
-  exits  : number;
+  exits: number;
 }
 interface ScheduleToday {
-  depart: string;   // "HH:mm"
-  arrive: string;   // "HH:mm"
+  depart: string;
+  arrive: string;
 }
+
+// ✅ 1. ADD THIS HELPER to ensure the bus ID format is correct for MQTT topics
+const toTopicId = (raw: string | null): string | null => {
+  if (!raw) return null;
+  if (raw.startsWith('bus-')) return raw;
+  const n = parseInt(raw, 10);
+  return isFinite(n) ? `bus-${n.toString().padStart(2, '0')}` : raw;
+};
+
 
 /* ────────────────────── COMPONENT ─────────────────────── */
 export default function PaoDashboard() {
   const router = useRouter();
+  const mqttRef = useRef<MqttClient | null>(null);
 
-  /* greeting + meta */
-  const [greeting, setGreeting]   = useState('Hello');
-  const [name, setName]           = useState('PAO');
-  const [clock, setClock]         = useState(
+  const [greeting, setGreeting] = useState('Hello');
+  const [name, setName] = useState('PAO');
+  const [clock, setClock] = useState(
     new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })
   );
-  const [busId, setBusId]         = useState<string | null>(null);
+  const [busId, setBusId] = useState<string | null>(null);
+  const [stats, setStats] = useState<LiveStats>({ inside: 0, entries: 0, exits: 0 });
+  const [schedule, setSchedule] = useState<ScheduleToday | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  /* live data-holders – swap with real sources if available */
-  const [stats, setStats]         = useState<LiveStats | null>(null);
-  const [schedule, setSchedule]   = useState<ScheduleToday | null>(null);
-  const [loading, setLoading]     = useState(true);
+  // --- DATA FETCHING AND REAL-TIME SETUP ---
 
-  /* ─── bootstrap data ─── */
   useEffect(() => {
-    (async () => {
-      const [fn, ln, bus] = await Promise.all([
+    const bootstrap = async () => {
+      setLoading(true);
+      const [token, fn, ln, busRaw] = await Promise.all([
+        AsyncStorage.getItem('@token'),
         AsyncStorage.getItem('@firstName'),
         AsyncStorage.getItem('@lastName'),
         AsyncStorage.getItem('@assignedBusId'),
       ]);
-      setName([fn, ln].filter(Boolean).join(' ') || 'PAO');
-      setBusId(bus);
 
-      /* greeting */
+      setName([fn, ln].filter(Boolean).join(' ') || 'PAO');
+      const formattedBusId = toTopicId(busRaw); // Use the helper
+      setBusId(formattedBusId);
+
       const h = new Date().getHours();
       setGreeting(h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening');
 
-      /* fake fetch – replace these with real calls / selectors */
-      setTimeout(() => {
-        setStats({ inside: 12, entries: 25, exits: 13 });
-        setSchedule({ depart: '09:30', arrive: '11:00' });
-        setLoading(false);
-      }, 600); // simulate round-trip
-    })();
+      if (formattedBusId && token) {
+        try {
+          const today = new Date().toISOString().slice(0, 10);
+          const res = await fetch(`${BACKEND}/pao/bus-trips?date=${today}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            const trips = await res.json();
+            if (trips.length > 0) {
+              setSchedule({ depart: trips[0].start_time, arrive: trips[trips.length - 1].end_time });
+            }
+          }
+        } catch (error) {
+          console.error("Failed to fetch schedule:", error);
+        }
+      }
+      setLoading(false);
+    };
 
-    /* live clock */
+    bootstrap();
+
     const t = setInterval(() => {
       setClock(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }));
-    }, 60_000);
+    }, 60000);
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    if (!busId) return;
+
+    // ✅ 2. DEFINE TOPICS for both telemetry and people counts
+    const telemetryTopic = `device/${busId}/telemetry`;
+    const peopleTopic = `device/${busId}/people`;
+
+    const client = mqtt.connect(MQTT_URL, { username: MQTT_USER, password: MQTT_PASS });
+    mqttRef.current = client;
+
+    client.on('connect', () => {
+      console.log(`[Dashboard] Subscribing to ${telemetryTopic} and ${peopleTopic}`);
+      client.subscribe([telemetryTopic, peopleTopic], { qos: 1 });
+    });
+
+    client.on('message', (topic, raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        // ✅ 3. HANDLE MESSAGES from both topics
+        if (topic === telemetryTopic && typeof msg.people === 'number') {
+          setStats(prev => ({ ...prev, inside: msg.people }));
+        } else if (topic === peopleTopic) {
+          setStats(prev => ({
+            ...prev,
+            entries: msg.in ?? prev.entries,
+            exits: msg.out ?? prev.exits,
+            inside: msg.total ?? prev.inside,
+          }));
+        }
+      } catch (e) {
+        console.warn('MQTT message parse error on dashboard:', e);
+      }
+    });
+
+    return () => { client.end(true); };
+  }, [busId]);
+
   /* ─── logout helper ─── */
-  const logout = () =>
-    Alert.alert('Logout', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Log Out',
-        style: 'destructive',
-        onPress: async () => {
-          await AsyncStorage.clear();
-          router.replace('/signin');
-        },
+  const logout = () => Alert.alert('Logout', 'Are you sure?', [
+    { text: 'Cancel', style: 'cancel' },
+    {
+      text: 'Log Out',
+      style: 'destructive',
+      onPress: async () => {
+        await AsyncStorage.clear();
+        router.replace('/signin');
       },
-    ]);
+    },
+  ]);
 
   /* ─── RENDER ─── */
   return (

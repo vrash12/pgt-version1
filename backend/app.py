@@ -1,4 +1,4 @@
-# backend/app.py
+# backend/main.py
 from flask import Flask, jsonify
 from config import Config
 from db import db, migrate
@@ -12,6 +12,9 @@ from routes.manager      import manager_bp
 from routes.ticket_sales import ticket_sales_bp
 from routes.tickets_static import tickets_bp
 from mqtt_ingest import start_in_background
+from flask_sqlalchemy import SQLAlchemy
+
+
 
 def create_app():
     app = Flask(__name__)

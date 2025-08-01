@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import jwt
 import os
 
+
 auth_bp = Blueprint('auth', __name__)
 
 # Secret key for JWT - in production, use environment variable
@@ -91,31 +92,51 @@ def login():
     print("🔍 DEBUG falling through to invalid creds response")
     return jsonify({'error': 'Invalid username or password'}), 401
 def require_role(role):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # Get the token from Authorization header
-            token = request.headers.get('Authorization')
+    """
+    A decorator to protect routes, ensuring the user has a valid token
+    and the specified role.
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            token = None
+            if 'Authorization' in request.headers:
+                auth_header = request.headers['Authorization']
+                try:
+                    token = auth_header.split(" ")[1]
+                except IndexError:
+                    return jsonify(error="Malformed Authorization header"), 401
 
             if not token:
-                return jsonify({"error": "Token is missing"}), 401
+                return jsonify(error="Missing token"), 401
 
             try:
-                # Remove the "Bearer " prefix from token
-                token = token.split(" ")[1]
-                # Verify the token
-                decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-                user_role = decoded.get("role")
+                # ✅ FIX: Use the SAME 'SECRET_KEY' from the top of the file
+                payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
                 
-                # Check if the user's role matches the required role
-                if user_role != role:
-                    return jsonify({"error": "Forbidden: Insufficient permissions"}), 403
-            except Exception as e:
-                return jsonify({"error": "Invalid token"}), 403
+                user_id = payload['user_id']
+                current_user = User.query.get(user_id)
+                if not current_user:
+                    return jsonify(error="User not found"), 401
 
-            return func(*args, **kwargs)
-        return wrapper
+                # CRITICAL STEP: Attach the user to the global 'g' object
+                g.user = current_user
+                
+                if current_user.role != role:
+                    return jsonify(error="Insufficient permissions"), 403
+
+            except jwt.ExpiredSignatureError:
+                return jsonify(error="Token has expired"), 401
+            except jwt.InvalidTokenError:
+                return jsonify(error="Invalid token"), 401
+            except Exception as e:
+                current_app.logger.error(f"Authentication error: {e}")
+                return jsonify(error="Authentication processing error"), 500
+
+            return f(*args, **kwargs)
+        return decorated_function
     return decorator
+
 
 
 # Optional: Add a route to verify tokens

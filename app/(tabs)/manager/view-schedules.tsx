@@ -1,6 +1,4 @@
-/* -----------------------------------------------------------------------
- *  view-schedules.tsx   (Manager → Schedules screen)
- * ---------------------------------------------------------------------- */
+//app/(tabs)/manager/view-schedules.tsx
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';

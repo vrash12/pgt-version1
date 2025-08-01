@@ -3,6 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Picker } from '@react-native-picker/picker';
+import { useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -33,7 +34,7 @@ export default function RouteTimeline() {
   const [tempDate, setTempDate] = useState<Date>(new Date());
   const [selDate, setSelDate] = useState<Date>(new Date());
   const [showPicker, setShowPicker] = useState(false);
-
+  const params = useLocalSearchParams<{ tripId?: string }>();
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -44,7 +45,48 @@ export default function RouteTimeline() {
     Alert.alert('Error', message, [{ text: 'OK' }]);
   };
 
-  // Load bus list with error handling
+  useEffect(() => {
+    if (params.tripId) {
+      const loadTripDetails = async () => {
+        setLoading(true); // Show loading indicator
+        try {
+          const tok = await AsyncStorage.getItem('@token');
+          if (!tok) {
+            showError('Authentication token not found');
+            return;
+          }
+
+          const res = await fetch(`${BACKEND}/manager/trips/${params.tripId}`, {
+            headers: { Authorization: `Bearer ${tok}` },
+          });
+
+          if (!res.ok) {
+            throw new Error('Failed to load details for the new trip.');
+          }
+
+          const tripDetails = await res.json();
+          
+          // Pre-select the bus and date based on the trip details
+          if (tripDetails.bus_id && tripDetails.service_date) {
+            setBusId(tripDetails.bus_id);
+            // Convert the date string from the backend into a proper Date object
+            const tripDate = new Date(tripDetails.service_date);
+            
+            setSelDate(tripDate);
+            setTempDate(tripDate);
+          }
+
+        } catch (e: any) {
+          console.error("Failed to pre-load timeline from tripId", e);
+          showError(e.message || 'Could not load the specified trip.');
+        } finally {
+          // The other useEffect watching [busId, selDate] will handle the rest
+        }
+      };
+      
+      loadTripDetails();
+    }
+  }, [params.tripId]); // This effect depends on the tripId parameter
   useEffect(() => {
     loadBuses();
   }, []);
@@ -58,35 +100,28 @@ export default function RouteTimeline() {
         return;
       }
   
-      // Log token to check if it's being retrieved correctly
-      console.log('Authorization Token:', tok);
-  
-      // Log the request URL
-      const day = selDate.toISOString().slice(0, 10); // Ensures the format is YYYY-MM-DD
-      const url = `${BACKEND}/manager/bus-trips?bus_id=${busId}&date=${day}`;
-      console.log("Request URL:", url);
+      // ✅ FIX: Call the /buses endpoint to get the list of all buses.
+      // This is the same endpoint your working "view-schedules" page uses.
+      const url = `${BACKEND}/manager/buses`;
+      console.log("Request URL for buses:", url);
   
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${tok}` },
       });
   
-      // Log the status of the response
-      console.log('Response Status:', res.status);
+      console.log('Buses Response Status:', res.status);
       
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
   
       const list = await res.json();
-      console.log("Bus list fetched:", list);
       setBuses(list);
     } catch (e) {
       console.error('❌ load buses error:', e);
       showError('Failed to load bus list. Please check your connection.');
     }
   };
-  
-
   // Enhanced date picker handlers
   const openPicker = () => setShowPicker(true);
   
@@ -147,25 +182,21 @@ export default function RouteTimeline() {
         return;
       }
   
-      // Check if busId is valid (selected bus)
       if (!busId) {
-        showError("Please select a bus first.");
-        console.error("No busId selected!"); // Log error if busId is undefined
-        return;
+        // This check is already here, but good to remember
+        return; 
       }
   
-      // Log the date and busId to verify it's correct
-      console.log("Selected Date:", selDate);
-      console.log("Selected Bus ID:", busId); // Log busId here
+      // ✅ FIX: Format the date without timezone conversion
+      const year = selDate.getFullYear();
+      const month = (selDate.getMonth() + 1).toString().padStart(2, '0'); // Months are 0-indexed
+      const dayOfMonth = selDate.getDate().toString().padStart(2, '0');
+      const dateForAPI = `${year}-${month}-${dayOfMonth}`;
   
-      // Format the date correctly to send in the request (ensuring it's in the format YYYY-MM-DD)
-      const day = selDate.toISOString().slice(0, 10); // Ensures the format is YYYY-MM-DD
+      // Use the correctly formatted date in the URL
+      const url = `${BACKEND}/manager/bus-trips?bus_id=${busId}&date=${dateForAPI}`;
+      console.log("Request URL:", url); // For debugging
   
-      // Log the request URL for debugging
-      const url = `${BACKEND}/manager/bus-trips?bus_id=${busId}&date=${day}`;
-      console.log("Request URL:", url);
-  
-      // Fetch trips with timeout
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
   
@@ -183,7 +214,7 @@ export default function RouteTimeline() {
       const trips = await tripsRes.json();
       const timeline: TimelineItem[] = [];
   
-      // Process trips
+      // The rest of your function remains the same...
       for (let tIdx = 0; tIdx < trips.length; tIdx++) {
         const t = trips[tIdx];
   
@@ -199,7 +230,6 @@ export default function RouteTimeline() {
   
         let prev: StopRec | undefined;
         stops.forEach((st) => {
-          // Trip segment
           if (prev && prev.depart_time !== st.arrive_time) {
             timeline.push({
               time: `${prev.depart_time} – ${st.arrive_time}`,
@@ -208,8 +238,6 @@ export default function RouteTimeline() {
               type: 'trip',
             });
           }
-  
-          // Service stop
           if (st.arrive_time !== st.depart_time) {
             timeline.push({
               time: `${st.arrive_time} – ${st.depart_time}`,
@@ -218,14 +246,12 @@ export default function RouteTimeline() {
               type: 'service',
             });
           }
-  
           prev = st;
         });
       }
   
       setItems(timeline);
   
-      // Animate fade in
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 500,
@@ -244,7 +270,6 @@ export default function RouteTimeline() {
       setLoading(false);
     }
   };
-  
   
   const selectedBus = buses.find(b => b.id === busId);
 
