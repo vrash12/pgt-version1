@@ -1,59 +1,87 @@
-/* ------------------------------------------------------------------ */
-/*  app/_layout.tsx                                                   */
-/* ------------------------------------------------------------------ */
+// app/_layout.tsx
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Slot, useRouter, useSegments } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
 import { jwtDecode } from 'jwt-decode';
 import React, { useEffect, useState } from 'react';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
+/* Keep the native splash visible while we bootstrap */
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 /* ─── types ───────────────────────────────────────────────────────── */
 type AppRole = 'commuter' | 'pao' | 'manager';
-interface JwtPayload { role: AppRole; exp: number; }
+interface JwtPayload { role: AppRole; exp: number }
 
-/* ─── helper: cast the segments tuple → string[] for TS’ sake ─────── */
-const seg = (segments: readonly string[] | readonly unknown[]) =>
-  segments as string[];
+/* helper for TS */
+const seg = (segments: readonly string[] | readonly unknown[]) => segments as string[];
 
-/* ─── layout component ────────────────────────────────────────────── */
 export default function RootLayout() {
   const router   = useRouter();
   const segments = useSegments();
-  const [ready, setReady] = useState(false);
+  const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      const token = await AsyncStorage.getItem('@token');
+    let cancelled = false;
 
-      if (!token) {
-        if (seg(segments).includes('signin') || seg(segments).includes('signup')) {
-          setReady(true);
+    (async () => {
+      try {
+        const token = await AsyncStorage.getItem('@token');
+
+        // No token → allow auth routes, otherwise send to /signin
+        if (!token) {
+          if (seg(segments).includes('signin') || seg(segments).includes('signup')) {
+            if (!cancelled) setIsReady(true);
+          } else {
+            router.replace('/signin');
+            if (!cancelled) setIsReady(true);
+          }
           return;
         }
+
+        // Has token → decode and route to role root if needed
+        let payload: JwtPayload | null = null;
+        try {
+          payload = jwtDecode<JwtPayload>(token);
+        } catch {
+          await AsyncStorage.clear();
+          router.replace('/signin');
+          if (!cancelled) setIsReady(true);
+          return;
+        }
+
+        const role = payload.role;
+        if (seg(segments).includes(role)) {
+          if (!cancelled) setIsReady(true);
+        } else {
+          router.replace({ pathname: `/${role}` });
+          if (!cancelled) setIsReady(true);
+        }
+      } catch {
+        // On any unexpected error, fail safe to signin
         router.replace('/signin');
-        return;
+        if (!cancelled) setIsReady(true);
       }
-
-      let payload: JwtPayload;
-      try {
-        payload = jwtDecode<JwtPayload>(token);
-      } catch (err) {
-        await AsyncStorage.clear();
-        router.replace('/signin');
-        return;
-      }
-
-      const role: AppRole = payload.role;
-
-      if (seg(segments).includes(role)) {
-        setReady(true);
-        return;
-      }
-
-      router.replace({ pathname: `/${role}` });
     })();
+
+    return () => { cancelled = true; };
   }, [segments, router]);
 
-  if (!ready) return null;
+  // Hide the native splash as soon as we are ready to render
+  useEffect(() => {
+    if (isReady) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [isReady]);
 
-  return <Slot />;
+  // While not ready, render nothing — the native splash stays visible
+  if (!isReady) return null;
+
+  return (
+    <SafeAreaProvider>
+      <StatusBar style="dark" translucent={false} backgroundColor="transparent" />
+      <Slot />
+    </SafeAreaProvider>
+  );
 }

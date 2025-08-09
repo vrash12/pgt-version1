@@ -1,3 +1,4 @@
+//app/(tabs)/commuter/my-receipts.tsx
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
@@ -15,19 +16,20 @@ import {
   View,
 } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
+import { API_BASE_URL } from "../../config";
 
-/* ─── constants ─── */
-const BACKEND = 'http://192.168.1.7:5000';
-
-/* ─── types ─── */
 type Receipt = {
   id: number;
   referenceNo: string;
-  date: string;   // e.g. "May 2, 2025"
-  time: string;   // e.g. "7:21 am"
-  fare: string;   // formatted already "15.00"
-  qr?: string;    // payload string for QRCode component
-  qr_url?: string;// optional static image
+  date: string;
+  time: string;
+  origin: string;        // 🔸
+  destination: string;   // 🔸
+  passengerType: string; // 🔸 "Regular" | "Discount"
+  commuter: string;      // 🔸
+  fare: string;
+  qr?: string;
+  qr_url?: string;
   paid: boolean;
 };
 
@@ -55,14 +57,17 @@ export default function MyReceipts() {
     
     try {
       const tok = await AsyncStorage.getItem('@token');
+      console.log('[DEBUG][MyReceipts] Token:', tok);
       const headers: Record<string, string> = {};
       if (tok) headers.Authorization = `Bearer ${tok}`;
+      console.log('[DEBUG][MyReceipts] Authorization header:', headers.Authorization);
 
-      let url = `${BACKEND}/commuter/tickets/mine`;
+      let url = `${API_BASE_URL}/commuter/tickets/mine`;
       if (f === '7' || f === '30') {
         url += `?days=${f}`;
       }
       const resp = await fetch(url, { headers });
+      console.log('[DEBUG][MyReceipts] Response status:', resp.status);
       if (!resp.ok) throw new Error(`Server ${resp.status}`);
       const json = (await resp.json()) as Receipt[];
       setReceipts(Array.isArray(json) ? json : []);
@@ -91,78 +96,101 @@ export default function MyReceipts() {
     fadeAnim.setValue(0);
     fetchReceipts(filter);
   }, [filter, fetchReceipts]);
+/* ── render helpers ── */
+const renderReceipt = ({ item, index }: { item: Receipt; index: number }) => {
+  const payload = encodeURIComponent(JSON.stringify(item));
 
-  /* ── render helpers ── */
-  const renderReceipt = ({ item, index }: { item: Receipt; index: number }) => (
-    <Animated.View 
-      style={[
-        styles.card,
-        {
-          opacity: fadeAnim,
-          transform: [{
-            translateY: fadeAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [20, 0],
-            }),
-          }],
-        }
-      ]}
-    >
-      {/* Status indicator */}
-      <View style={[styles.statusIndicator, item.paid ? styles.statusPaid : styles.statusUnpaid]} />
-      
-      {/* QR column */}
-      <View style={styles.qrWrapper}>
-        <View style={styles.qrContainer}>
-          {item.qr ? (
-            <QRCode value={item.qr} size={64} backgroundColor="transparent" />
-          ) : (
-            <Image source={{ uri: item.qr_url }} style={styles.qrImg} />
-          )}
-        </View>
-      </View>
+  const onPress = () => {
+    router.push({
+      pathname: '/commuter/receipt/[id]',
+      params: {
+        id: item.id.toString(),
+        data: payload,
+      },
+    });
+  };
 
-      {/* details column */}
-      <View style={styles.detailsWrapper}>
-        <View style={styles.headerRow}>
-          <View style={styles.refContainer}>
-            <Text style={styles.refLabel}>Reference No.</Text>
-            <Text style={styles.refValue}>{item.referenceNo}</Text>
-          </View>
-          {item.paid && (
-            <View style={styles.badgePaid}>
-              <Ionicons name="checkmark-circle" size={12} color="#fff" />
-              <Text style={styles.badgePaidText}>Paid</Text>
-            </View>
-          )}
-        </View>
-        
-        <View style={styles.infoRow}>
-          <View style={styles.infoItem}>
-            <Ionicons name="calendar-outline" size={14} color="#666" />
-            <View style={styles.infoTextContainer}>
-              <Text style={styles.infoLabel}>Date</Text>
-              <Text style={styles.infoValue}>{item.date}</Text>
-            </View>
-          </View>
-          <View style={styles.infoItem}>
-            <Ionicons name="time-outline" size={14} color="#666" />
-            <View style={styles.infoTextContainer}>
-              <Text style={styles.infoLabel}>Time</Text>
-              <Text style={styles.infoValue}>{item.time}</Text>
-            </View>
-          </View>
-        </View>
-        
-        <View style={styles.fareRow}>
-          <View style={styles.fareContainer}>
-            <Text style={styles.fareLabel}>Total Fare</Text>
-            <Text style={styles.fareValue}>₱{item.fare}</Text>
+  return (
+    <TouchableOpacity activeOpacity={0.8} onPress={onPress}>
+      <Animated.View
+        style={[
+          styles.card,
+          {
+            opacity: fadeAnim,
+            transform: [
+              {
+                translateY: fadeAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [20, 0],
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        {/* Status indicator */}
+        <View
+          style={[
+            styles.statusIndicator,
+            item.paid ? styles.statusPaid : styles.statusUnpaid,
+          ]}
+        />
+
+        {/* QR column */}
+        <View style={styles.qrWrapper}>
+          <View style={styles.qrContainer}>
+            {item.qr ? (
+              <QRCode value={item.qr} size={64} backgroundColor="transparent" />
+            ) : (
+              <Image source={{ uri: item.qr_url }} style={styles.qrImg} />
+            )}
           </View>
         </View>
-      </View>
-    </Animated.View>
+
+        {/* details column */}
+        <View style={styles.detailsWrapper}>
+          <View style={styles.headerRow}>
+            <View style={styles.refContainer}>
+              <Text style={styles.refLabel}>Reference No.</Text>
+              <Text style={styles.refValue}>{item.referenceNo}</Text>
+            </View>
+            {item.paid && (
+              <View style={styles.badgePaid}>
+                <Ionicons name="checkmark-circle" size={12} color="#fff" />
+                <Text style={styles.badgePaidText}>Paid</Text>
+              </View>
+            )}
+          </View>
+
+          <View style={styles.infoRow}>
+            <View style={styles.infoItem}>
+              <Ionicons name="calendar-outline" size={14} color="#666" />
+              <View style={styles.infoTextContainer}>
+                <Text style={styles.infoLabel}>Date</Text>
+                <Text style={styles.infoValue}>{item.date}</Text>
+              </View>
+            </View>
+            <View style={styles.infoItem}>
+              <Ionicons name="time-outline" size={14} color="#666" />
+              <View style={styles.infoTextContainer}>
+                <Text style={styles.infoLabel}>Time</Text>
+                <Text style={styles.infoValue}>{item.time}</Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.fareRow}>
+            <View style={styles.fareContainer}>
+              <Text style={styles.fareLabel}>Total Fare</Text>
+              <Text style={styles.fareValue}>₱{item.fare}</Text>
+            </View>
+          </View>
+        </View>
+      </Animated.View>
+    </TouchableOpacity>
   );
+};
+
 
   const FilterButton = ({ label, value, count }: { label: string; value: FilterValue; count?: number }) => (
     <Pressable
@@ -193,9 +221,7 @@ export default function MyReceipts() {
       {/* ── Header ── */}
       <View style={styles.headerContainer}>
         <View style={styles.headerContent}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={24} color="#fff" />
-          </TouchableOpacity>
+        
           <View style={styles.headerTextContainer}>
             <Text style={styles.headerTitle}>My Receipts</Text>
             <Text style={styles.headerSubtitle}>
@@ -300,15 +326,7 @@ const styles = StyleSheet.create({
     borderRadius: 75,
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
   },
-  backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
-  },
+
   headerTextContainer: {
     flex: 1,
   },

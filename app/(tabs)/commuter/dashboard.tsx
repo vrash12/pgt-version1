@@ -1,11 +1,9 @@
-// app/commuter/dashboard.tsx
-
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons'
-import AsyncStorage from '@react-native-async-storage/async-storage'
-import { useFocusEffect } from '@react-navigation/native'
-import { LinearGradient } from 'expo-linear-gradient'
-import { useRouter } from 'expo-router'
-import React, { useCallback, useEffect, useState } from 'react'
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -15,11 +13,11 @@ import {
   Text,
   TouchableOpacity,
   View,
-} from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { API_BASE_URL } from "../../config";
 
-const API = 'http://192.168.1.7:5000'
-const { width } = Dimensions.get('window')
+const { width } = Dimensions.get('window');
 
 // Small reusable “dashlet” tile
 const Dashlet = ({
@@ -28,10 +26,10 @@ const Dashlet = ({
   icon,
   onPress,
 }: {
-  label: string
-  value: number | string
-  icon: React.ReactNode
-  onPress: () => void
+  label: string;
+  value: number | string;
+  icon: React.ReactNode;
+  onPress: () => void;
 }) => (
   <TouchableOpacity style={styles.dashlet} activeOpacity={0.8} onPress={onPress}>
     <LinearGradient colors={['#4CAF50', '#2E7D32']} style={styles.dashletBg}>
@@ -40,76 +38,92 @@ const Dashlet = ({
       <Text style={styles.dashLbl}>{label}</Text>
     </LinearGradient>
   </TouchableOpacity>
-)
+);
 
 interface DashPayload {
-  greeting: string
-  user_name: string
-  recent_tickets: number
-  unread_messages: number
-  next_trip: null | { bus: string; start: string; end: string }
+  greeting: string;
+  user_name: string;
+  recent_tickets: number;
+  unread_messages: number;
+  next_trip: null | { bus: string; start: string; end: string };
+
+  // NEW
+  active_buses: number;
+  today_trips: number;
+  today_tickets: number;
+  today_revenue: number;
+  last_ticket?: {
+    referenceNo: string;
+    fare: string;
+    paid: boolean;
+    date: string;
+    time: string;
+  } | null;
+  last_announcement?: {
+    message: string;
+    timestamp: string;
+    author_name: string;
+    bus_identifier: string;
+  } | null;
+  upcoming?: Array<{ bus: string; start: string; end: string }>;
 }
 
+
 export default function CommuterDashboard() {
-  const insets = useSafeAreaInsets()
-  const router = useRouter()
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
 
-  const [data, setData] = useState<DashPayload | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [greetingText, setGreetingText] = useState('Hello')
-  const [userName, setUserName] = useState('Commuter')
+  const [data, setData] = useState<DashPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [greetingText, setGreetingText] = useState('Hello');
+  const [userName, setUserName] = useState('Commuter');
 
-  // ────────────────────────────────────────────────────────────────
   // Fetch dashboard payload
-  // ────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
-    setLoading(true)
+    setLoading(true);
     try {
-      const token = await AsyncStorage.getItem('@token')
-      const res = await fetch(`${API}/commuter/dashboard`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
+            const token = await AsyncStorage.getItem('@token');
+            console.log('[DEBUG][CommuterDashboard] Token from AsyncStorage:', token);
+      
+            const headers: Record<string,string> = token
+              ? { Authorization: `Bearer ${token}` }
+              : {};
+            console.log('[DEBUG][CommuterDashboard] Using headers:', headers);
+      
+            const res = await fetch(`${API_BASE_URL}/commuter/dashboard`, { headers });
+            console.log('[DEBUG][CommuterDashboard] Response status:', res.status);
       if (res.ok) {
-        setData(await res.json())
+        const json: DashPayload = await res.json();
+        setData(json);
+      } else {
+        console.warn('Dashboard fetch failed:', res.status);
       }
     } catch (err) {
-      console.warn('Failed to load dashboard:', err)
+      console.warn('Failed to load dashboard:', err);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }, [])
+  }, []);
 
-  // ────────────────────────────────────────────────────────────────
   // Compute greeting & read cached name
-  // ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    ;(async () => {
+    (async () => {
       const [first, last] = await Promise.all([
         AsyncStorage.getItem('@firstName'),
         AsyncStorage.getItem('@lastName'),
-      ])
-      setUserName([first, last].filter(Boolean).join(' ') || 'Commuter')
+      ]);
+      setUserName([first, last].filter(Boolean).join(' ') || 'Commuter');
 
-      const hr = new Date().getHours()
-      setGreetingText(hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening')
-    })()
-  }, [])
+      const hr = new Date().getHours();
+      setGreetingText(
+        hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening'
+      );
+    })();
+  }, []);
 
-  // ────────────────────────────────────────────────────────────────
-  // Initial load
-  // ────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    load()
-  }, [load])
-
-  // ────────────────────────────────────────────────────────────────
-  // Reload whenever this screen gains focus
-  // ────────────────────────────────────────────────────────────────
-  useFocusEffect(
-    useCallback(() => {
-      load()
-    }, [load])
-  )
+  // Initial load + on focus
+  useEffect(() => { load(); }, [load]);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
   return (
     <View style={styles.container}>
@@ -119,7 +133,7 @@ export default function CommuterDashboard() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
       >
-        {/* ── HEADER ───────────────────────────────────────────────── */}
+        {/* HEADER */}
         <LinearGradient
           colors={['#2E7D32', '#1B5E20', '#0D4F12']}
           style={[styles.header, { paddingTop: insets.top + 20 }]}
@@ -139,8 +153,8 @@ export default function CommuterDashboard() {
             </View>
             <TouchableOpacity
               onPress={async () => {
-                await AsyncStorage.clear()
-                router.replace('/signin')
+                await AsyncStorage.clear();
+                router.replace('/signin');
               }}
               style={styles.logoutButton}
             >
@@ -154,7 +168,7 @@ export default function CommuterDashboard() {
           </View>
         </LinearGradient>
 
-        {/* ── DASHLETS ──────────────────────────────────────────────── */}
+        {/* DASHLETS */}
         {loading || !data ? (
           <ActivityIndicator size="large" color="#2E7D32" style={{ marginTop: 40 }} />
         ) : (
@@ -179,8 +193,29 @@ export default function CommuterDashboard() {
                 icon={<MaterialCommunityIcons name="bus-clock" size={22} color="#fff" />}
               />
             </View>
+{/* NEW: extra KPIs */}
+<View style={styles.dashStrip}>
+  <Dashlet
+    label="Active Buses"
+    value={data.active_buses}
+    onPress={() => router.push('./live-locations')}
+    icon={<Ionicons name="wifi" size={22} color="#fff" />}
+  />
+  <Dashlet
+    label="Today’s Trips"
+    value={data.today_trips}
+    onPress={() => router.push('./route-schedules')}
+    icon={<MaterialCommunityIcons name="calendar-clock" size={22} color="#fff" />}
+  />
+  <Dashlet
+    label="Today Spend"
+    value={`₱${Number(data.today_revenue || 0).toFixed(2)}`}
+    onPress={() => router.push('./my-receipts')}
+    icon={<Ionicons name="cash" size={22} color="#fff" />}
+  />
+</View>
 
-            {/* ── NEXT-TRIP CARD ────────────────────────────────────── */}
+            {/* NEXT-TRIP CARD */}
             {data.next_trip && (
               <LinearGradient
                 colors={['#4CAF50', '#388E3C']}
@@ -202,7 +237,7 @@ export default function CommuterDashboard() {
         )}
       </ScrollView>
     </View>
-  )
+  );
 }
 
 const styles = StyleSheet.create({
@@ -232,4 +267,4 @@ const styles = StyleSheet.create({
   tripTime:       { color: '#fff', fontSize: 16, marginTop: 4 },
   seeAllBtn:      { marginTop: 12, alignSelf: 'flex-end' },
   seeAllTxt:      { color: '#fff', fontSize: 14, fontWeight: '600' },
-})
+});

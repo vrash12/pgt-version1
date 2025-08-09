@@ -17,8 +17,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { API_BASE_URL } from "../../config";
 
-const BACKEND = 'http://192.168.1.7:5000';
+
 
 type TimelineItem = {
   time: string;
@@ -26,7 +27,6 @@ type TimelineItem = {
   loc?: string;
   type: 'trip' | 'service';
 };
-
 export default function RouteTimeline() {
   const [buses, setBuses] = useState<{ id: number; identifier: string }[]>([]);
   const [busId, setBusId] = useState<number | undefined>();
@@ -57,7 +57,7 @@ export default function RouteTimeline() {
         return;
       }
       
-      const res = await fetch(`${BACKEND}/commuter/buses`, {
+      const res = await fetch(`${API_BASE_URL}/commuter/buses`, {
         headers: { Authorization: `Bearer ${tok}` },
       });
       
@@ -142,7 +142,7 @@ export default function RouteTimeline() {
 
       type TripRec = { id: number; number: string; start_time: string; end_time: string };
       const tripsRes = await fetch(
-       `${BACKEND}/commuter/bus-trips?bus_id=${busId}&date=${day}`,
+       `${API_BASE_URL}/commuter/bus-trips?bus_id=${busId}&date=${day}`,
         { 
           headers: { Authorization: `Bearer ${tok}` },
           signal: controller.signal
@@ -164,7 +164,7 @@ export default function RouteTimeline() {
 
         type StopRec = { stop_name: string; arrive_time: string; depart_time: string };
         const stopsRes = await fetch(
-        `${BACKEND}/commuter/stop-times?trip_id=${t.id}`,
+        `${API_BASE_URL}/commuter/stop-times?trip_id=${t.id}`,
           { headers: { Authorization: `Bearer ${tok}` } }
         );
         

@@ -4,16 +4,18 @@
     "slug": "pgt",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logos.png",
     "scheme": "pgt",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+
     "ios": {
       "supportsTablet": true
     },
+
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/logos.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
@@ -22,26 +24,45 @@
           "apiKey": "AIzaSyCsqxf39pjTDNN4r205Kw4cfUsklevfTKI"
         }
       },
-      "package": "com.justin_aldrei.pgt"
+      "package": "com.justin_aldrei.pgt",
+       "softwareKeyboardLayoutMode": "resize"
     },
+
     "web": {
       "bundler": "metro",
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
+
     "updates": {
       "fallbackToCacheTimeout": 0,
       "checkAutomatically": "ON_ERROR_RECOVERY"
     },
+
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/logos.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
+        }
+      ],
+      ["expo-dev-client"],
+      "expo-web-browser",
+
+
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "gradlePluginVersion": "8.2.2",
+            "kotlinVersion": "1.9.25",
+            "compileSdkVersion": 34,
+            "targetSdkVersion": 34
+          }
         }
       ],
       [
@@ -49,14 +70,13 @@
         {
           "enabled": true
         }
-      ],
-      [
-        "expo-dev-client"
       ]
     ],
+
     "experiments": {
       "typedRoutes": true
     },
+
     "extra": {
       "router": {},
       "eas": {

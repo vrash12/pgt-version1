@@ -1,3 +1,4 @@
+//app/(tabs)/commuter/live-locations.tsx
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
@@ -10,6 +11,7 @@ import {
   Alert,
   Animated,
   Dimensions,
+  Modal,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -64,15 +66,45 @@ export default function LiveLocationScreen() {
   const [ackTime, setAckTime] = useState<Date | null>(null);
   const windowH = Dimensions.get('window').height;
 
+  const [showMovementModal, setShowMovementModal] = useState(false);
+const lastLocRef = useRef<LatLng | null>(null);
+const stillCounterRef = useRef(0);
+
   const selectedIdRef = useRef(selectedId);
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
 
-  // --- SIDE EFFECTS (useEffect) ---
-
-  // 1. Animation setup
+  useEffect(() => {
+    if (!userLoc) return;
+    
+    if (lastLocRef.current) {
+      const distLat = Math.abs(userLoc.latitude - lastLocRef.current.latitude);
+      const distLng = Math.abs(userLoc.longitude - lastLocRef.current.longitude);
+      const moved = (distLat * 111) > 0.01 || (distLng * 111) > 0.01; // ~10m
+  
+      if (!moved) {
+        stillCounterRef.current += 1;
+        // if no movement for 3 checks (~15s) and sharing is active
+        if (stillCounterRef.current >= 3 && isSharing) {
+          setShowMovementModal(true);
+        }
+      } else {
+        stillCounterRef.current = 0;
+      }
+    }
+    lastLocRef.current = userLoc;
+  }, [userLoc]);
+  
+  // when commuter confirms in modal
+  const confirmStopSharing = () => {
+    setShowMovementModal(false);
+    setIsSharing(false);
+    setRemaining(10);
+    setAckTime(null);
+    addNotice('Live Location Closed', 'Stopped due to inactivity.');
+  };
   useEffect(() => {
     const pulse = Animated.loop(
       Animated.sequence([
@@ -463,6 +495,42 @@ export default function LiveLocationScreen() {
           </View>
         )}
       </ScrollView>
+      
+      <Modal visible={showMovementModal} transparent animationType="fade">
+        <View style={{
+          flex: 1,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          justifyContent: 'center',
+          alignItems: 'center',
+          padding: 20
+        }}>
+          <View style={{
+            backgroundColor: '#fff',
+            borderRadius: 16,
+            padding: 24,
+            width: '100%',
+            maxWidth: 340
+          }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1B5E20', marginBottom: 12 }}>
+              No Movement Detected
+            </Text>
+            <Text style={{ fontSize: 15, color: '#333', marginBottom: 20 }}>
+              We've noticed you haven't moved for a while. Your live location will be closed to save resources.
+            </Text>
+            <TouchableOpacity
+              onPress={confirmStopSharing}
+              style={{
+                backgroundColor: '#2E7D32',
+                borderRadius: 12,
+                paddingVertical: 12,
+                alignItems: 'center'
+              }}
+            >
+              <Text style={{ color: '#fff', fontWeight: 'bold' }}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

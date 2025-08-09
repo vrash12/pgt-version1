@@ -1,3 +1,4 @@
+//app/(tabs)/commuter/notifications.tsx
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -19,7 +20,7 @@ import {
   View,
 } from 'react-native';
 
-const API = 'http://192.168.1.7:5000';
+import { API_BASE_URL } from "../../config";
 const { width } = Dimensions.get('window');
 
 type Announcement = {
@@ -79,7 +80,7 @@ export default function NotificationsScreen() {
   useEffect(() => {
     const fetchBuses = async () => {
       try {
-        const res = await fetch(`${API}/commuter/buses`);
+        const res = await fetch(`${API_BASE_URL}/commuter/buses`);
         if (res.ok) {
           setBuses(await res.json());
         } else {
@@ -116,7 +117,7 @@ export default function NotificationsScreen() {
           headers['Authorization'] = `Bearer ${token}`;
         }
 
-        const res = await fetch(`${API}/commuter/announcements?${params.toString()}`, { headers });
+        const res = await fetch(`${API_BASE_URL}/commuter/announcements?${params.toString()}`, { headers });
 
         if (res.ok) {
           const data: Announcement[] = await res.json();

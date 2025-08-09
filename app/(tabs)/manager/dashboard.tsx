@@ -1,140 +1,187 @@
-// app/(tabs)/manager/dashboard.tsx
-import { FontAwesome5, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Link, useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+/* ------------------------------------------------------------------
+ * MANAGER ▸ DASHBOARD  (analytics-first version)
+ * -----------------------------------------------------------------*/
 import {
+  FontAwesome5,
+  Ionicons,
+  MaterialCommunityIcons,
+} from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import dayjs from "dayjs";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import React, { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
   Alert,
   Dimensions,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
+  TextStyle,
   TouchableOpacity,
   View,
-} from 'react-native';
+  ViewStyle,
+} from "react-native";
+import { API_BASE_URL } from "../../config";
+const { width } = Dimensions.get("window");
 
-const { width } = Dimensions.get('window');
+/* ─────────────────────────── HELPERS ───────────────────────────── */
+const blob = (
+  w: number,
+  op: number,
+  top?: number,
+  left?: number,
+  bottom?: number,
+  right?: number
+): ViewStyle => ({
+  position: "absolute",
+  width: w,
+  height: w,
+  borderRadius: w / 2,
+  backgroundColor: `rgba(255,255,255,${op})`,
+  top,
+  left,
+  bottom,
+  right,
+});
 
+/* ─────────────────────────── TYPES ─────────────────────────────── */
+type TicketRow = { id: number; paid: boolean; fare: string };
+type DailyRow  = { date: string; tickets: number; revenue: number };
+
+/* ─────────────────────────  COMPONENT  ─────────────────────────── */
 export default function ManagerDashboard() {
   const router = useRouter();
 
-  // ─── user + clock ──────────────────────────
-  const [greeting, setGreeting] = useState('Hello');
-  const [name, setName]         = useState('Manager');
-  const currentTime = new Date().toLocaleTimeString([], {
-    hour:   'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
+  /* greeting & live clock */
+  const [greeting, setGreeting] = useState("Hello");
+  const [name, setName]         = useState("Manager");
+  const [clock, setClock]       = useState(dayjs().format("h:mm A"));
 
   useEffect(() => {
     (async () => {
       const [fn, ln] = await Promise.all([
-        AsyncStorage.getItem('@firstName'),
-        AsyncStorage.getItem('@lastName'),
+        AsyncStorage.getItem("@firstName"),
+        AsyncStorage.getItem("@lastName"),
       ]);
-      const full = [fn, ln].filter(Boolean).join(' ');
-      setName(full || 'Manager');
+      setName([fn, ln].filter(Boolean).join(" ") || "Manager");
+
       const h = new Date().getHours();
-      setGreeting(h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening');
+      setGreeting(h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening");
     })();
+
+    const t = setInterval(() => setClock(dayjs().format("h:mm A")), 30_000);
+    return () => clearInterval(t);
   }, []);
 
-  // ─── live KPIs ─────────────────────────────
-  const [metrics, setMetrics]       = useState({
-    tickets_today: 0,
-    paid_today:    0,
-    unpaid_today:  0,
-    revenue_today: 0,
-  });
-  const [activeBuses, setActiveBuses] = useState(0);
+  /* KPI state */
+  const [activeBuses,  setActiveBuses]  = useState<number | null>(null);
+  const [ticketsToday, setTicketsToday] = useState<number | null>(null);
+  const [paidToday,    setPaidToday]    = useState<number | null>(null);
+  const [unpaidToday,  setUnpaidToday]  = useState<number | null>(null);
+  const [revenueToday, setRevenueToday] = useState<number | null>(null);
+  const [last7,        setLast7]        = useState<DailyRow[] | null>(null);
+  const [loading,      setLoading]      = useState(true);
 
+  /* fetch metrics every 20 s */
   useEffect(() => {
-    let timer: number;
+    let timer: NodeJS.Timeout;
 
-    (async function fetchMetrics() {
+    async function fetchMetrics() {
       try {
-        const tok = await AsyncStorage.getItem('@token');
+        const tok = await AsyncStorage.getItem("@token");
+        const hdr = { Authorization: `Bearer ${tok}` };
 
-        // 1) tickets KPIs
-        const res = await fetch('http://192.168.1.7:5000/manager/metrics/tickets', {
-          headers: { Authorization: `Bearer ${tok}` },
-        });
-        if (res.ok) {
-          setMetrics(await res.json());
+        /* TODAY’S TICKETS */
+        const todayIso = dayjs().format("YYYY-MM-DD");
+        const tRes = await fetch(`${API_BASE_URL}/manager/tickets?date=${todayIso}`, { headers: hdr });
+        if (tRes.ok) {
+          const body = await tRes.json();
+          const list: TicketRow[] = Array.isArray(body) ? body : body.tickets;
+          const paid  = list.filter((t) => t.paid).length;
+          const revenue = list.filter((t) => t.paid).reduce((s, t) => s + parseFloat(t.fare), 0);
+          setTicketsToday(list.length);
+          setPaidToday(paid);
+          setUnpaidToday(list.length - paid);
+          setRevenueToday(revenue);
         }
 
-        // 2) active buses (cached by bus-status screen)
-        const DEVICES = ['bus-01', 'bus-02', 'bus-03'];
+        /* LAST 7-DAY TREND */
+        const fromIso = dayjs().subtract(6, "day").format("YYYY-MM-DD");
+        const mRes = await fetch(
+          `${API_BASE_URL}/manager/metrics/tickets?from=${fromIso}&to=${todayIso}`,
+          { headers: hdr }
+        );
+        if (mRes.ok) {
+          const { daily } = await mRes.json();
+          setLast7(daily);
+        }
+
+        /* ACTIVE BUSES (from cache) */
+        const DEVICES = ["bus-01", "bus-02", "bus-03"];
         let online = 0;
-        for (const id of DEVICES) {
+        for (const id of DEVICES)
           if (await AsyncStorage.getItem(`lastBusStatus:${id}`)) online++;
-        }
         setActiveBuses(online);
-
       } catch (err) {
-        console.warn('Dashboard metric error', err);
+        console.warn("Dashboard metrics error", err);
       } finally {
+        setLoading(false);
         timer = setTimeout(fetchMetrics, 20_000);
       }
-    })();
+    }
 
+    fetchMetrics();
     return () => clearTimeout(timer);
   }, []);
 
-  // ─── logout ─────────────────────────────────
+  /* logout helper */
   const logout = () =>
-    Alert.alert('Logout', 'Confirm?', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert("Logout", "Confirm?", [
+      { text: "Cancel", style: "cancel" },
       {
-        text: 'Log Out',
-        style: 'destructive',
+        text: "Log Out",
+        style: "destructive",
         onPress: async () => {
-          await AsyncStorage.multiRemove(['@token', '@role']);
-          router.replace('/signin');
+          await AsyncStorage.multiRemove(["@token", "@role"]);
+          router.replace("/signin");
         },
       },
     ]);
 
-  // ─── quick‐action menu ──────────────────────
-  const menu = [
-    { title: 'Ticket Sales',   icon: 'ticket-alt',      iType: 'FontAwesome5',   c: '#C62828', bg: '#FFE5E5', href: './ticket-sales' },
-    { title: 'View Schedules', icon: 'calendar-alt',    iType: 'FontAwesome5',   c: '#F57C00', bg: '#FFF3E0', href: './view-schedules' },
-    { title: 'Track Bus',      icon: 'bus',             iType: 'Ionicons',       c: '#1976D2', bg: '#E3F2FD', href: './bus-status' },
-    { title: 'Route Insights', icon: 'bar-chart',       iType: 'Ionicons',       c: '#512DA8', bg: '#EDE7F6', href: './route-insights' },
-  ];
-
+  /* ────────────────────────── UI ─────────────────────────────── */
   return (
-    <SafeAreaView style={s.container}>
+    <SafeAreaView style={st.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
-
         {/* HEADER */}
-        <LinearGradient colors={['#2E7D32', '#1B5E20', '#0D4F12']} style={s.header}>
-          <View style={s.blob1} />
-          <View style={s.blob2} />
-          <View style={s.blob3} />
+        <LinearGradient colors={["#2E7D32", "#1B5E20", "#0D4F12"]} style={st.header}>
+          <View style={blob(200, 0.04, -50, -50)} />
+          <View style={blob(150, 0.05, undefined, undefined, -40, -40)} />
+          <View style={blob(100, 0.07, 80, width * 0.7)} />
 
-          <View style={s.topRow}>
-            <View style={s.profileRow}>
-              <LinearGradient colors={['#4CAF50', '#66BB6A']} style={s.avatar}>
+          <View style={st.topRow}>
+            {/* user bubble */}
+            <View style={st.profileRow}>
+              <LinearGradient colors={["#4CAF50", "#66BB6A"]} style={st.avatar}>
                 <Ionicons name="person" size={26} color="#fff" />
               </LinearGradient>
-              <View style={s.welcome}>
-                <Text style={s.greet}>{greeting},</Text>
-                <Text style={s.user}>{name}</Text>
-                <View style={s.onlineRow}>
-                  <View style={s.dot} />
-                  <Text style={s.onlineTxt}>{currentTime}</Text>
+              <View style={st.welcome}>
+                <Text style={st.greet}>{greeting},</Text>
+                <Text style={st.user}>{name}</Text>
+                <View style={st.onlineRow}>
+                  <View style={st.dot} />
+                  <Text style={st.onlineTxt}>{clock}</Text>
                 </View>
               </View>
             </View>
 
-            <TouchableOpacity onPress={logout} style={s.logoutBtn}>
+            {/* logout */}
+            <TouchableOpacity onPress={logout} style={st.logoutBtn}>
               <LinearGradient
-                colors={['rgba(255,255,255,0.2)', 'rgba(255,255,255,0.1)']}
-                style={s.logoutInner}
+                colors={["rgba(255,255,255,0.2)", "rgba(255,255,255,0.1)"]}
+                style={st.logoutInner}
               >
                 <MaterialCommunityIcons name="logout-variant" size={24} color="#fff" />
               </LinearGradient>
@@ -143,102 +190,137 @@ export default function ManagerDashboard() {
         </LinearGradient>
 
         {/* CURVED SHEET */}
-        <View style={s.sheet}>
-          {/* logo */}
-          <View style={s.logoWrap}>
-            <LinearGradient colors={['#4CAF50', '#66BB6A']} style={s.logoCircle}>
-              <MaterialCommunityIcons name="bus" size={32} color="#fff" />
-              <View style={s.pinBadge}>
-                <Ionicons name="location" size={16} color="#fff" />
+        <View style={st.sheet}>
+          {/* KPI STRIP */}
+          <View style={st.kpiRow}>
+            <KpiCard icon="bus"                label="Active" value={activeBuses} />
+            <KpiCard icon="ticket-confirmation" lib="Material" label="Tickets" value={ticketsToday} />
+            <KpiCard icon="cash"               label="Paid ₱" value={revenueToday?.toFixed(2)} />
+            <KpiCard
+              icon="exclamation-circle"
+              lib="FA5"
+              color="#C62828"
+              label="Unpaid"
+              value={unpaidToday}
+            />
+          </View>
+
+          {/* TREND TABLE */}
+          <Text style={st.trendTitle}>Last 7 Days</Text>
+          {loading && !last7 ? (
+            <ActivityIndicator style={{ marginVertical: 30 }} color="#2E7D32" />
+          ) : (
+            last7 && (
+              <View style={st.table}>
+                <View style={st.tableRow}>
+                  <Text style={[st.th, { flex: 2 }]}>Date</Text>
+                  <Text style={st.th}>Tickets</Text>
+                  <Text style={st.th}>Revenue</Text>
+                </View>
+                {last7.map((d) => (
+                  <View style={st.tableRow} key={d.date}>
+                    <Text style={[st.tdDate, { flex: 2 }]}>
+                      {dayjs(d.date).format("MMM D")}
+                    </Text>
+                    <Text style={st.td}>{d.tickets}</Text>
+                    <Text style={st.td}>₱{d.revenue.toFixed(2)}</Text>
+                  </View>
+                ))}
               </View>
-            </LinearGradient>
-          </View>
-
-          {/* LIVE KPI STRIP */}
-          <View style={s.kpiRow}>
-            <View style={s.kpiCard}>
-              <Ionicons name="bus" size={22} color="#2E7D32" />
-              <Text style={s.kpiVal}>{activeBuses}</Text>
-              <Text style={s.kpiLbl}>Active Buses</Text>
-            </View>
-
-            <View style={s.kpiCard}>
-              <MaterialCommunityIcons name="ticket-confirmation" size={22} color="#2E7D32" />
-              <Text style={s.kpiVal}>{metrics.tickets_today}</Text>
-              <Text style={s.kpiLbl}>Tickets Today</Text>
-            </View>
-
-            <View style={s.kpiCard}>
-              <Ionicons name="cash" size={22} color="#2E7D32" />
-              <Text style={s.kpiVal}>₱{metrics.revenue_today.toFixed(2)}</Text>
-              <Text style={s.kpiLbl}>Paid Today</Text>
-            </View>
-
-            <View style={s.kpiCard}>
-              <FontAwesome5 name="exclamation-circle" size={20} color="#C62828" />
-              <Text style={[s.kpiVal, { color: '#C62828' }]}>{metrics.unpaid_today}</Text>
-              <Text style={s.kpiLbl}>Unpaid</Text>
-            </View>
-          </View>
-
-          {/* MENU */}
-          <Text style={s.menuTitle}>Quick Actions</Text>
-          <View style={s.menuGrid}>
-            {menu.map((m, i) => (
-              <Link key={i} href={m.href as any} asChild>
-                <TouchableOpacity style={s.menuItem}>
-                  <LinearGradient colors={['#fff', '#f8f9fa']} style={s.menuInner}>
-                    <View style={[s.menuIconWrap, { backgroundColor: m.bg }]}>
-                      {m.iType === 'FontAwesome5' && (
-                        <FontAwesome5 name={m.icon as any} size={20} color={m.c} />
-                      )}
-                      {m.iType === 'Ionicons' && (
-                        <Ionicons name={m.icon as any} size={22} color={m.c} />
-                      )}
-                      {m.iType === 'MaterialCommunityIcons' && (
-                        <MaterialCommunityIcons name={m.icon as any} size={22} color={m.c} />
-                      )}
-                    </View>
-                    <Text style={s.menuTxt}>{m.title}</Text>
-                    <Ionicons name="chevron-forward" size={16} color="#C8E6C9" />
-                  </LinearGradient>
-                </TouchableOpacity>
-              </Link>
-            ))}
-          </View>
+            )
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-/* STYLES */
-const blob = (w: number, c: string) => ({
-  position: 'absolute' as const,
-  width: w,
-  height: w,
-  borderRadius: w / 2,
-  backgroundColor: c,
-});
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f8f9fa' },
-  header: { paddingTop: 20, paddingBottom: 40, paddingHorizontal: 20, overflow: 'hidden' },
-  blob1: { ...blob(200, 'rgba(255,255,255,0.04)'), top: -50, right: -50 },
-  blob2: { ...blob(150, 'rgba(255,255,255,0.05)'), bottom: -40, left: -40 },
-  blob3: { ...blob(100, 'rgba(255,255,255,0.07)'), top: 80, left: width * 0.7 },
-  topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  profileRow: { flexDirection: 'row', alignItems: 'center' },
-  avatar: { width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center' },
+/* ───────────────────────── SUB-COMPONENTS ───────────────────────── */
+function KpiCard({
+  icon,
+  value,
+  label,
+  color = "#2E7D32",
+  lib,
+}: {
+  icon: string;
+  value: number | string | null | undefined;
+  label: string;
+  color?: string;
+  lib?: "FA5" | "Material";
+}) {
+  const IconCmp =
+    lib === "FA5"
+      ? FontAwesome5
+      : lib === "Material"
+      ? MaterialCommunityIcons
+      : Ionicons;
+  return (
+    <View style={st.kpiCard}>
+      <IconCmp name={icon as any} size={22} color={color} />
+      <Text style={[st.kpiVal, { color }]}>{value ?? "—"}</Text>
+      <Text style={[st.kpiLbl, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+/* ─────────────────────────── STYLES ─────────────────────────────── */
+const st = StyleSheet.create<{
+  container:   ViewStyle;
+  header:      ViewStyle;
+  topRow:      ViewStyle;
+  profileRow:  ViewStyle;
+  avatar:      ViewStyle;
+  welcome:     ViewStyle;
+  greet:       TextStyle;
+  user:        TextStyle;
+  onlineRow:   ViewStyle;
+  dot:         ViewStyle;
+  onlineTxt:   TextStyle;
+  logoutBtn:   ViewStyle;
+  logoutInner: ViewStyle;
+  sheet:       ViewStyle;
+  kpiRow:      ViewStyle;
+  kpiCard:     ViewStyle;
+  kpiVal:      TextStyle;
+  kpiLbl:      TextStyle;
+  trendTitle:  TextStyle;
+  table:       ViewStyle;
+  tableRow:    ViewStyle;
+  th:          TextStyle;
+  tdDate:      TextStyle;
+  td:          TextStyle;
+}>({
+  container: { flex: 1, backgroundColor: "#f8f9fa" },
+
+  /* header */
+  header: {
+    paddingTop: 20,
+    paddingBottom: 40,
+    paddingHorizontal: 20,
+    overflow: "hidden",
+  },
+  topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  profileRow: { flexDirection: "row", alignItems: "center" },
+  avatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   welcome: { marginLeft: 16 },
-  greet: { color: '#E8F5E8', fontSize: 15, opacity: 0.9 },
-  user: { color: '#fff', fontSize: 22, fontWeight: '700' },
-  onlineRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#4CAF50', marginRight: 6 },
-  onlineTxt: { color: '#A5D6A7', fontSize: 12, fontWeight: '500' },
-  logoutBtn: { borderRadius: 22, overflow: 'hidden' },
+  greet: { color: "#E8F5E8", fontSize: 15, opacity: 0.9 },
+  user: { color: "#fff", fontSize: 22, fontWeight: "700" },
+  onlineRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#4CAF50", marginRight: 6 },
+  onlineTxt: { color: "#A5D6A7", fontSize: 12, fontWeight: "500" },
+  logoutBtn: { borderRadius: 22, overflow: "hidden" },
   logoutInner: { padding: 12, borderRadius: 22 },
+
+  /* sheet */
   sheet: {
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
     borderTopLeftRadius: 32,
     borderTopRightRadius: 32,
     marginTop: -20,
@@ -246,31 +328,41 @@ const s = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 30,
   },
-  logoWrap: { alignItems: 'center', marginBottom: 24 },
-  logoCircle: { width: 70, height: 70, borderRadius: 35, justifyContent: 'center', alignItems: 'center' },
-  pinBadge: { position: 'absolute', top: -4, right: -4, backgroundColor: '#FF5722', padding: 4, borderRadius: 12 },
-  kpiRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
+
+  /* KPI strip */
+  kpiRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
   kpiCard: {
     flex: 1,
     marginHorizontal: 4,
-    backgroundColor: '#E8F5E9',
+    backgroundColor: "#E8F5E9",
     borderRadius: 16,
     padding: 14,
-    alignItems: 'center',
+    alignItems: "center",
   },
-  kpiVal: { fontSize: 18, fontWeight: '700', color: '#1B5E20', marginTop: 6 },
-  kpiLbl: { fontSize: 12, color: '#1B5E20', marginTop: 2 },
-  menuTitle: { fontSize: 20, fontWeight: '700', color: '#2E7D32', marginVertical: 14 },
-  menuGrid: { gap: 12 },
-  menuItem: { borderRadius: 16, elevation: 2 },
-  menuInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 18,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E8F5E8',
+  kpiVal: { fontSize: 18, fontWeight: "700", marginTop: 6 },
+  kpiLbl: { fontSize: 12, marginTop: 2 },
+
+  /* trend */
+  trendTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#2E7D32",
+    marginVertical: 14,
   },
-  menuIconWrap: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', marginRight: 16 },
-  menuTxt: { flex: 1, color: '#2E7D32', fontSize: 16, fontWeight: '600' },
+  table: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E0E0E0",
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  tableRow: {
+    flexDirection: "row",
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E0E0E0",
+  },
+  th: { flex: 1, fontWeight: "700", color: "#2E7D32", fontSize: 13 },
+  tdDate: { fontSize: 14, color: "#333" },
+  td: { flex: 1, fontSize: 14, color: "#333" },
 });

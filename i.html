@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bus 01 – Live Telemetry + MQTT Info</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    crossorigin=""
+  />
+  <style>
+    :root{
+      --bg:#0d1117; --panel:#161b22; --text:#e6edf3; --muted:#8b949e;
+      --good:#22c55e; --warn:#f59e0b; --bad:#ef4444;
+    }
+    body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding: 14px 18px; background:#0b1220; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .badge { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:var(--panel); border:1px solid #222; color:var(--muted); }
+    .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); }
+    .dot.good { background: var(--good); }
+    .dot.warn { background: var(--warn); }
+    .dot.bad { background: var(--bad); }
+    main { padding:16px; display:grid; gap:16px; }
+    .card { background:var(--panel); border:1px solid #222; border-radius:10px; padding:14px; }
+    h2 { margin-top:0; font-size:18px; }
+    .kpi { background:#0f1420; border:1px solid #222; border-radius:8px; padding:10px; }
+    .label { color:var(--muted); font-size:12px; }
+    .value { font-size:20px; margin-top:4px; font-variant-numeric: tabular-nums; }
+    #map { height: 300px; border-radius: 10px; }
+    .mono { font-family: monospace; font-size: 13px; }
+    pre { background:#0b0f19; padding:10px; border-radius:8px; border:1px solid #222; overflow:auto; max-height:200px; }
+  </style>
+</head>
+<body>
+<header>
+  <strong>🚍 Bus 01</strong>
+  <span class="badge"><span class="dot" id="fix-dot"></span><span id="fix-text">GPS</span></span>
+  <span class="badge"><span class="dot" id="api-dot"></span><span id="api-text">API</span></span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Location & People Count</h2>
+    <div id="map"></div>
+    <div style="display:flex; gap:10px; margin-top:10px;">
+      <div class="kpi" style="flex:1;">
+        <div class="label">Latitude</div>
+        <div class="value mono" id="lat">—</div>
+      </div>
+      <div class="kpi" style="flex:1;">
+        <div class="label">Longitude</div>
+        <div class="value mono" id="lng">—</div>
+      </div>
+      <div class="kpi" style="flex:1;">
+        <div class="label">People Onboard</div>
+        <div class="value" id="people">—</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>MQTT Configuration</h2>
+    <table class="mono">
+      <tr><td>Server:</td><td>35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud</td></tr>
+      <tr><td>Port:</td><td>8883</td></tr>
+      <tr><td>Username:</td><td>vanrodolf</td></tr>
+      <tr><td>Password:</td><td>Vanrodolf123.</td></tr>
+      <tr><td>Device ID:</td><td>bus-01</td></tr>
+      <tr><td>Telemetry Topic:</td><td>device/bus-01/telemetry</td></tr>
+      <tr><td>People Topic:</td><td>device/bus-01/people</td></tr>
+      <tr><td>Status Topic:</td><td>device/bus-01/status</td></tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Raw /data Output</h2>
+    <pre class="mono" id="raw">Waiting...</pre>
+  </section>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const latEl = document.getElementById('lat');
+  const lngEl = document.getElementById('lng');
+  const pplEl = document.getElementById('people');
+  const rawEl = document.getElementById('raw');
+  const fixDot = document.getElementById('fix-dot');
+  const fixText = document.getElementById('fix-text');
+  const apiDot = document.getElementById('api-dot');
+  const apiText = document.getElementById('api-text');
+
+  let map = L.map('map').setView([14.6, 120.98], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19
+  }).addTo(map);
+  let marker = L.marker([14.6, 120.98]).addTo(map);
+
+  function setDot(el, status) {
+    el.classList.remove('good','warn','bad');
+    if (status === 'good') el.classList.add('good');
+    if (status === 'warn') el.classList.add('warn');
+    if (status === 'bad') el.classList.add('bad');
+  }
+
+  async function fetchData() {
+    try {
+      const res = await fetch('/data', {cache:'no-store'});
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      setDot(apiDot, 'good'); apiText.textContent = 'OK';
+      rawEl.textContent = JSON.stringify(data, null, 2);
+
+      if (data.hasFix) { setDot(fixDot, 'good'); fixText.textContent = 'GPS Fix'; }
+      else { setDot(fixDot, 'warn'); fixText.textContent = 'No Fix'; }
+
+      latEl.textContent = data.lat?.toFixed(6);
+      lngEl.textContent = data.lng?.toFixed(6);
+      pplEl.textContent = data.people ?? '—';
+
+      if (data.hasFix) {
+        marker.setLatLng([data.lat, data.lng]);
+        map.setView([data.lat, data.lng], 15);
+      }
+    } catch(e) {
+      setDot(apiDot, 'bad'); apiText.textContent = 'Error';
+      rawEl.textContent = 'Error fetching /data: ' + e;
+    }
+  }
+  setInterval(fetchData, 1000);
+  fetchData();
+</script>
+</body>
+</html>

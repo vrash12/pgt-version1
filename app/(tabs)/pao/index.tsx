@@ -1,6 +1,5 @@
-// app/pao/index.tsx
+// app/(tabs)/pao/index.tsx
 import { Redirect } from 'expo-router';
-
-export default function PaoRoot() {
+export default function PaoIndex() {
   return <Redirect href="/pao/dashboard" />;
 }

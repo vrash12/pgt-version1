@@ -1,18 +1,21 @@
-// ticket-detail.tsx (updated)
+// app/(tabs)/pao/ticket-detail.tsx
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
+import { API_BASE_URL } from "../../config";
 
-const BACKEND = 'http://192.168.1.7:5000';
 
 type TicketDetail = {
   id: number;
@@ -30,176 +33,311 @@ type TicketDetail = {
 export default function TicketDetailScreen() {
   const { id, edit } = useLocalSearchParams<{ id: string; edit?: string }>();
   const ticketId = Number(id);
-  const isEdit = edit === 'true';
+  const isEditMode = edit === 'true';
   const router = useRouter();
 
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // editable local states
-  const [commuterName, setCommuterName] = useState('');
-  const [date, setDate] = useState('');
-  const [time, setTime] = useState('');
-  const [fare, setFare] = useState('');
-  const [passengerType, setPassengerType] = useState<'regular' | 'discount'>('regular');
-  const [paid, setPaid] = useState(false);
+  // --- Editable Form State ---
+  const [formCommuter, setFormCommuter] = useState('');
+  const [formPassengerType, setFormPassengerType] = useState<'regular' | 'discount'>('regular');
+  const [formPaid, setFormPaid] = useState(false);
 
+  // Fetch ticket data on load
   useEffect(() => {
     (async () => {
+      if (!ticketId) return;
+      setLoading(true);
       try {
         const tok = await AsyncStorage.getItem('@token');
-        const res = await fetch(`${BACKEND}/pao/tickets/${ticketId}`, {
+        const res = await fetch(`${API_BASE_URL}/pao/tickets/${ticketId}`, {
           headers: { Authorization: `Bearer ${tok}` },
         });
+        if (!res.ok) throw new Error('Failed to fetch ticket details.');
+
         const data: TicketDetail = await res.json();
         setTicket(data);
 
-        // seed form
-        setCommuterName(data.commuter);
-        setDate(data.date);
-        setTime(data.time);
-        setFare(data.fare);
-        setPassengerType(data.passengerType);
-        setPaid(data.paid);
+        // Seed the form state with fetched data
+        setFormCommuter(data.commuter);
+        setFormPassengerType(data.passengerType);
+        setFormPaid(data.paid);
       } catch (e) {
         console.error(e);
+        Alert.alert("Error", "Could not load ticket details.");
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [ticketId]);
 
   const handleSave = async () => {
     if (!ticket) return;
     setSaving(true);
     try {
       const tok = await AsyncStorage.getItem('@token');
-      await fetch(`${BACKEND}/pao/tickets/${ticketId}`, {
+      
+      const res = await fetch(`${API_BASE_URL}/pao/tickets/${ticketId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
         },
         body: JSON.stringify({
-          commuter_name: commuterName.trim(),
-          created_at: `${date} ${time}`.trim(), // backend should parse
-          fare: parseFloat(fare) || 0,
-          passenger_type: passengerType,
-          paid,
+          // Only send fields that are allowed to be edited
+          commuter_name: formCommuter.trim(),
+          passenger_type: formPassengerType,
+          paid: formPaid,
         }),
       });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Failed to save changes.');
+      }
+
+      // Navigate back after a successful save
       router.back();
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error('Failed to save ticket:', e);
+      Alert.alert("Save Failed", e.message);
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading || !ticket) {
+  const headerTitle = useMemo(() => (isEditMode ? 'Edit Ticket' : 'Ticket Details'), [isEditMode]);
+
+  if (loading) {
     return (
-      <View style={styles.loader}>
+      <View style={styles.loaderContainer}>
         <ActivityIndicator size="large" color="#2e7d32" />
       </View>
     );
   }
 
-  return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.label}>Reference</Text>
-      <Text style={styles.value}>#{ticket.referenceNo}</Text>
-
-      <Text style={styles.section}>Passenger</Text>
-      {isEdit ? (
-        <TextInput style={styles.input} value={commuterName} onChangeText={setCommuterName} />
-      ) : (
-        <Text style={styles.value}>{ticket.commuter}</Text>
-      )}
-
-      <Text style={styles.section}>Date</Text>
-      {isEdit ? (
-        <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder="April 30, 2025" />
-      ) : (
-        <Text style={styles.value}>{ticket.date}</Text>
-      )}
-
-      <Text style={styles.section}>Time</Text>
-      {isEdit ? (
-        <TextInput style={styles.input} value={time} onChangeText={setTime} placeholder="7:20 am" />
-      ) : (
-        <Text style={styles.value}>{ticket.time}</Text>
-      )}
-
-      <Text style={styles.section}>Fare (₱)</Text>
-      {isEdit ? (
-        <TextInput style={styles.input} keyboardType="numeric" value={fare} onChangeText={setFare} />
-      ) : (
-        <Text style={styles.value}>₱{ticket.fare}</Text>
-      )}
-
-      <Text style={styles.section}>Passenger Type</Text>
-      {isEdit ? (
-        <View style={styles.toggleRow}>
-          {(['regular', 'discount'] as const).map(t => (
-            <TouchableOpacity
-              key={t}
-              style={[styles.toggleBtn, passengerType === t && styles.toggleSelected]}
-              onPress={() => setPassengerType(t)}
-            >
-              <Text style={[styles.toggleText, passengerType === t && styles.toggleTextSelected]}>{t}</Text>
+  if (!ticket) {
+    return (
+      <SafeAreaView style={styles.container}>
+         <View style={styles.header}>
+            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+              <Ionicons name="arrow-back" size={24} color="#333" />
             </TouchableOpacity>
-          ))}
+            <Text style={styles.headerTitle}>Error</Text>
+          </View>
+        <View style={styles.loaderContainer}>
+          <Text>Ticket not found.</Text>
         </View>
-      ) : (
-        <Text style={styles.value}>{ticket.passengerType}</Text>
-      )}
+      </SafeAreaView>
+    );
+  }
 
-      <Text style={styles.section}>Paid?</Text>
-      {isEdit ? (
-        <TouchableOpacity
-          style={[styles.payToggle, paid ? styles.payYes : styles.payNo]}
-          onPress={() => setPaid(!paid)}
-        >
-          <Text style={styles.payText}>{paid ? 'Yes' : 'No'}</Text>
+  return (
+    <SafeAreaView style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+          <Ionicons name="arrow-back" size={24} color="#333" />
         </TouchableOpacity>
-      ) : (
-        <Text style={styles.value}>{ticket.paid ? 'Yes' : 'No'}</Text>
-      )}
+        <Text style={styles.headerTitle}>{headerTitle}</Text>
+      </View>
 
-      {isEdit && (
-        <TouchableOpacity style={[styles.saveBtn, saving && { opacity: 0.7 }]} onPress={handleSave} disabled={saving}>
-          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>Save Changes</Text>}
-        </TouchableOpacity>
-      )}
-    </ScrollView>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        {/* Reference Number Card */}
+        <View style={styles.card}>
+          <Text style={styles.refLabel}>Reference Number</Text>
+          <Text style={styles.refValue}>#{ticket.referenceNo}</Text>
+        </View>
+
+        {/* Passenger Details Card */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Passenger Details</Text>
+          <FormField icon="person-outline" label="Passenger Name">
+            {isEditMode ? (
+              <TextInput style={styles.input} value={formCommuter} onChangeText={setFormCommuter} />
+            ) : (
+              <Text style={styles.valueText}>{ticket.commuter}</Text>
+            )}
+          </FormField>
+          <FormField icon="pricetag-outline" label="Passenger Type">
+            {isEditMode ? (
+              <View style={styles.toggleRow}>
+                {(['regular', 'discount'] as const).map(t => (
+                  <TouchableOpacity
+                    key={t}
+                    style={[styles.toggleBtn, formPassengerType === t && styles.toggleSelected]}
+                    onPress={() => setFormPassengerType(t)}
+                  >
+                    <Text style={[styles.toggleText, formPassengerType === t && styles.toggleTextSelected]}>{t}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : (
+              <Text style={styles.valueText}>{ticket.passengerType}</Text>
+            )}
+          </FormField>
+        </View>
+
+        {/* Trip Details Card (READ-ONLY) */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Trip Details</Text>
+          <FormField icon="calendar-outline" label="Date">
+            <Text style={styles.valueText}>{ticket.date}</Text>
+          </FormField>
+          <FormField icon="time-outline" label="Time">
+            <Text style={styles.valueText}>{ticket.time}</Text>
+          </FormField>
+        </View>
+
+        {/* Payment Details Card */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Payment Details</Text>
+          <FormField icon="cash-outline" label="Fare Amount">
+             {/* Fare is now always read-only */}
+            <Text style={styles.valueText}>₱{ticket.fare}</Text>
+          </FormField>
+          <FormField icon="card-outline" label="Payment Status">
+            {isEditMode ? (
+              <TouchableOpacity
+                style={[styles.toggleBtn, styles.paidToggle, formPaid && styles.toggleSelected]}
+                onPress={() => setFormPaid(!formPaid)}
+              >
+                <Text style={[styles.toggleText, formPaid && styles.toggleTextSelected]}>{formPaid ? 'Paid' : 'Pending'}</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={[styles.statusBadge, ticket.paid ? styles.statusPaid : styles.statusPending]}>
+                <Text style={styles.statusText}>{ticket.paid ? 'PAID' : 'PENDING'}</Text>
+              </View>
+            )}
+          </FormField>
+        </View>
+
+        {isEditMode && (
+          <TouchableOpacity style={[styles.saveBtn, saving && { opacity: 0.7 }]} onPress={handleSave} disabled={saving}>
+            {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>Save Changes</Text>}
+          </TouchableOpacity>
+        )}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
-const baseText = { fontSize: 16, color: '#333' };
+// Helper component to avoid repetition
+const FormField = ({ icon, label, children }: { icon: keyof typeof Ionicons.glyphMap; label: string; children: React.ReactNode }) => (
+  <View style={styles.fieldContainer}>
+    <View style={styles.labelContainer}>
+      <Ionicons name={icon} size={16} color="#666" />
+      <Text style={styles.labelText}>{label}</Text>
+    </View>
+    <View style={styles.valueContainer}>{children}</View>
+  </View>
+);
+
 const styles = StyleSheet.create({
-  container: { padding: 20 },
-  loader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  label: { fontSize: 12, color: '#666' },
-  section: { fontSize: 12, color: '#666', marginTop: 18 },
-  value: { ...baseText, fontWeight: '600' },
+  container: { flex: 1, backgroundColor: '#f8faf9' },
+  loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8faf9' },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e9ecef',
+    backgroundColor: '#fff',
+  },
+  backButton: { padding: 8 },
+  headerTitle: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#333',
+    marginRight: 40, // Balance the back button space
+  },
+  scrollContent: { padding: 20, paddingBottom: 100 },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#2e7d32',
+    marginBottom: 16,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  refLabel: { fontSize: 14, color: '#666', textAlign: 'center' },
+  refValue: { fontSize: 22, fontWeight: 'bold', color: '#333', textAlign: 'center', marginTop: 4 },
+  fieldContainer: {
+    marginBottom: 16,
+  },
+  labelContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  labelText: {
+    fontSize: 14,
+    color: '#666',
+    marginLeft: 8,
+  },
+  valueContainer: {
+    marginLeft: 24,
+  },
+  valueText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+  },
   input: {
-    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+    color: '#333',
+    backgroundColor: '#f8faf9',
+  },
+  toggleRow: { flexDirection: 'row', gap: 12 },
+  toggleBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: '#ccc',
-    borderRadius: 6,
-    padding: 10,
-    ...baseText,
+    borderRadius: 20,
   },
-  toggleRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
-  toggleBtn: { padding: 8, borderWidth: 1, borderColor: '#ccc', borderRadius: 6 },
+  paidToggle: {
+    alignSelf: 'flex-start',
+  },
   toggleSelected: { backgroundColor: '#e8f5e8', borderColor: '#2e7d32' },
-  toggleText: { color: '#666' },
-  toggleTextSelected: { color: '#2e7d32', fontWeight: '600' },
-  payToggle: { marginTop: 8, padding: 10, borderRadius: 6, alignItems: 'center' },
-  payYes: { backgroundColor: '#4caf50' },
-  payNo: { backgroundColor: '#ff9800' },
-  payText: { color: '#fff', fontWeight: '600' },
-  saveBtn: { marginTop: 30, backgroundColor: '#2e7d32', padding: 14, borderRadius: 8, alignItems: 'center' },
-  saveText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  toggleText: { color: '#666', textTransform: 'capitalize' },
+  toggleTextSelected: { color: '#2e7d32', fontWeight: '700' },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    alignSelf: 'flex-start',
+  },
+  statusPaid: { backgroundColor: '#4caf50' },
+  statusPending: { backgroundColor: '#ff9800' },
+  statusText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  saveBtn: {
+    backgroundColor: '#2e7d32',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  saveText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 });

@@ -1,13 +1,15 @@
+// TWEAK IN app.json: set "expo.android.softwareKeyboardLayoutMode": "resize"
+
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
-  SafeAreaView,
   StatusBar,
   StyleSheet,
   Text,
@@ -15,7 +17,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'; // TWEAK: use SafeAreaView from safe-area-context
+import { API_BASE_URL } from '../../config';
 
 type Ann = {
   id: number;
@@ -23,39 +26,47 @@ type Ann = {
   timestamp: string;
   created_by: number;
   author_name: string;
-  bus:          string; 
+  bus: string;
+  _showDate?: boolean;
 };
-
-const API = 'http://192.168.1.7:5000';
 
 export default function AnnouncementScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const TAB_BAR_H = (Platform.OS === 'ios' ? 74 : 66) + insets.bottom;
 
-  const flatRef = useRef<FlatList>(null);
-  
+  // TWEAK IF YOUR TAB HEIGHT CHANGES
+  const TAB_BAR_H = 66 + insets.bottom;
+  const COMPOSER_H = 64;
 
-  const COMPOSER_HEIGHT = 80;
+  const flatRef = useRef<FlatList<Ann & { _showDate?: boolean }>>(null);
 
   const [loading, setLoading] = useState(true);
   const [anns, setAnns] = useState<Ann[]>([]);
   const [draft, setDraft] = useState('');
+  const [kbVisible, setKbVisible] = useState(false);
+
+  useEffect(() => {
+    const sh = Keyboard.addListener('keyboardDidShow', () => setKbVisible(true));
+    const hd = Keyboard.addListener('keyboardDidHide', () => setKbVisible(false));
+    return () => {
+      sh.remove();
+      hd.remove();
+    };
+  }, []);
 
   useEffect(() => {
     (async () => {
       try {
         const token = await AsyncStorage.getItem('@token');
-        const res = await fetch(`${API}/pao/broadcast`, {
-          headers: { Authorization: `Bearer ${token}` },
+        const res = await fetch(`${API_BASE_URL}/pao/broadcast`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         });
         if (res.ok) {
           const json: Ann[] = await res.json();
-          // The backend now sends the list pre-sorted, newest first
           setAnns(json);
         }
       } catch (e) {
-        console.error("Failed to load announcements:", e);
+        console.error('Failed to load announcements:', e);
       } finally {
         setLoading(false);
       }
@@ -67,30 +78,35 @@ export default function AnnouncementScreen() {
     if (!trimmed) return;
     setDraft('');
     const token = await AsyncStorage.getItem('@token');
-    const res = await fetch(`${API}/pao/broadcast`, {
+    const res = await fetch(`${API_BASE_URL}/pao/broadcast`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ message: trimmed }),
     });
     if (!res.ok) return;
     const newAnn: Ann = await res.json();
-    // Add the new message to the top of the list
     setAnns(prev => [newAnn, ...prev]);
     setTimeout(() => flatRef.current?.scrollToOffset({ offset: 0, animated: true }), 100);
   };
 
   const formatDate = (iso: string) =>
-    new Date(iso).toLocaleDateString(undefined, {
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
-    });
-
+    new Date(iso).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
   const formatTime = (iso: string) =>
     new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  const dataWithHeaders = useMemo(
+    () =>
+      anns.map((a, i) => {
+        const prev = anns[i - 1];
+        const sameDay =
+          prev && new Date(prev.timestamp).toDateString() === new Date(a.timestamp).toDateString();
+        return { ...a, _showDate: !sameDay };
+      }),
+    [anns]
+  );
 
   if (loading) {
     return (
@@ -101,21 +117,11 @@ export default function AnnouncementScreen() {
     );
   }
 
-  const dataWithHeaders = anns.map((a, i) => {
-    const prev = anns[i - 1];
-    return {
-      ...a,
-      _showDate: !prev || formatDate(prev.timestamp) !== formatDate(a.timestamp),
-    };
-  });
-
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView edges={['top', 'left', 'right']} style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="chevron-back" size={24} color="#2E7D32" />
-        </TouchableOpacity>
         <View style={styles.headerTextContainer}>
           <Text style={styles.title}>Announcements</Text>
           <Text style={styles.subtitle}>{anns.length} messages</Text>
@@ -125,72 +131,79 @@ export default function AnnouncementScreen() {
         </View>
       </View>
 
-      <FlatList
-        ref={flatRef}
-        data={dataWithHeaders}
-        keyExtractor={item => item.id.toString()}
-        inverted // Optimally displays chat messages
+      <KeyboardAvoidingView
         style={{ flex: 1 }}
-        contentContainerStyle={{
-                   /* 16 px side-padding like before */
-                   paddingHorizontal: 16,
-          
-                   /*  space = tab-bar + composer + a small margin          *
-                    *  (on an inverted list paddingTop pushes _up_ = down)  */
-                   paddingTop: TAB_BAR_H + COMPOSER_HEIGHT + 16,
-          
-                   /* keep a little room for the very first day-separator */
-                   paddingBottom: 16,
-                 }}
-        renderItem={({ item }) => (
-          <View style={styles.messageContainer}>
-            <View style={styles.messageWrapper}>
-              <View style={styles.avatarContainer}>
-                <View style={styles.avatar}>
-                  <Ionicons name="person" size={16} color="#fff" />
-                </View>
-              </View>
-              <View style={styles.messageBubble}>
-                <View style={styles.bubbleHeader}>
-                <Text style={styles.busLabel}>{item.bus}</Text>
-                  <Text style={styles.messageTime}>{formatTime(item.timestamp)}</Text>
-                </View>
-                <Text style={styles.messageText}>{item.message}</Text>
-              </View>
-            </View>
-            {item._showDate && (
-              <View style={styles.dateSeparator}>
-                <View style={styles.dateLine} />
-                <Text style={styles.dateText}>{formatDate(item.timestamp)}</Text>
-                <View style={styles.dateLine} />
-              </View>
-            )}
-          </View>
-        )}
-      />
-
-<KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={TAB_BAR_H}
-        style={[styles.composerContainer, { bottom: TAB_BAR_H }]}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined} // TWEAK: no behavior on Android
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : undefined}
       >
-        <View style={styles.composerShadow}>
-          <View style={styles.composer}>
-            <TextInput
-              style={styles.textInput}
-              placeholder="Share an announcement..."
-              placeholderTextColor="#9E9E9E"
-              value={draft}
-              onChangeText={setDraft}
-              multiline
-            />
-            <TouchableOpacity
-              onPress={handleSend}
-              style={[styles.sendButton, { opacity: draft.trim() ? 1 : 0.5 }]}
-              disabled={!draft.trim()}
-            >
-              <Ionicons name="send" size={20} color="#fff" />
-            </TouchableOpacity>
+        <FlatList
+          ref={flatRef}
+          data={dataWithHeaders as any}
+          keyExtractor={item => String(item.id)}
+          inverted
+          keyboardShouldPersistTaps="handled"
+          style={{ flex: 1 }}
+          contentContainerStyle={{
+            paddingHorizontal: 16,
+            paddingTop: COMPOSER_H + 12, // TWEAK IF YOU CHANGE COMPOSER_H
+            paddingBottom: 16,
+            backgroundColor: '#fff',
+          }}
+          renderItem={({ item }: any) => (
+            <View style={styles.messageContainer}>
+              <View style={styles.messageWrapper}>
+                <View style={styles.avatarContainer}>
+                  <View style={styles.avatar}>
+                    <Ionicons name="person" size={16} color="#fff" />
+                  </View>
+                </View>
+                <View style={styles.messageBubble}>
+                  <View style={styles.bubbleHeader}>
+                    <Text style={styles.busLabel}>{item.bus}</Text>
+                    <Text style={styles.messageTime}>{formatTime(item.timestamp)}</Text>
+                  </View>
+                  <Text style={styles.messageText}>{item.message}</Text>
+                </View>
+              </View>
+              {item._showDate && (
+                <View style={styles.dateSeparator}>
+                  <View style={styles.dateLine} />
+                  <Text style={styles.dateText}>{formatDate(item.timestamp)}</Text>
+                  <View style={styles.dateLine} />
+                </View>
+              )}
+            </View>
+          )}
+        />
+
+        <View
+          pointerEvents="box-none"
+          style={[
+            styles.composerWrap,
+            {
+              bottom: kbVisible ? 0 : TAB_BAR_H, // TWEAK IF YOUR TAB HEIGHT CHANGES
+              paddingBottom: kbVisible ? 0 : insets.bottom,
+            },
+          ]}
+        >
+          <View style={styles.composerShadow}>
+            <View style={styles.composer}>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Share an announcement..."
+                placeholderTextColor="#9E9E9E"
+                value={draft}
+                onChangeText={setDraft}
+                multiline
+              />
+              <TouchableOpacity
+                onPress={handleSend}
+                style={[styles.sendButton, { opacity: draft.trim() ? 1 : 0.5 }]}
+                disabled={!draft.trim()}
+              >
+                <Ionicons name="send" size={20} color="#fff" />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -202,6 +215,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },
   loadingText: { marginTop: 16, fontSize: 16, color: '#666' },
+
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -210,21 +224,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#E8F5E8',
-  },
-  busLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#2E7D32',
-    marginRight: 8,
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#E8F5E8',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
   },
   headerTextContainer: { flex: 1 },
   title: { fontSize: 24, fontWeight: '700', color: '#2E7D32' },
@@ -237,14 +236,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
- 
+
   messageContainer: { marginBottom: 16 },
   dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 20 },
   dateLine: { flex: 1, height: 1, backgroundColor: '#E0E0E0' },
   dateText: { paddingHorizontal: 16, fontSize: 12, color: '#666', fontWeight: '600' },
   messageWrapper: { flexDirection: 'row', alignItems: 'flex-start' },
   avatarContainer: { marginRight: 12, marginTop: 4 },
-  avatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#2E7D32', alignItems: 'center', justifyContent: 'center' },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#2E7D32',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   messageBubble: {
     flex: 1,
     backgroundColor: '#fff',
@@ -259,13 +265,19 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
   },
   bubbleHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  authorName: { fontSize: 14, fontWeight: '700', color: '#2E7D32' },
+  busLabel: { fontSize: 14, fontWeight: '700', color: '#2E7D32' },
   messageTime: { fontSize: 12, color: '#666', fontWeight: '500' },
   messageText: { fontSize: 15, color: '#333', lineHeight: 22 },
+
+  composerWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+  },
   composerShadow: {
     backgroundColor: '#fff',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 8,
     borderTopWidth: 1,
     borderTopColor: '#E8F5E8',
   },
@@ -279,11 +291,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E0E0E0',
   },
-    composerContainer: {
-        position: 'absolute',
-        left:     0,
-        right:    0,
-      },
-  textInput: { flex: 1, fontSize: 16, color: '#333', maxHeight: 100, paddingVertical: Platform.OS === 'ios' ? 8 : 0 },
-  sendButton: { backgroundColor: '#2E7D32', width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', marginLeft: 8, marginBottom: Platform.OS === 'ios' ? 0 : 4 },
+  textInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#333',
+    maxHeight: 100,
+    paddingVertical: 0,
+    textAlignVertical: 'top',
+  },
+  sendButton: {
+    backgroundColor: '#2E7D32',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
 });

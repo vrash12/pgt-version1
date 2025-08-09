@@ -18,8 +18,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const BACKEND = 'http://192.168.1.7:5000';
+import { API_BASE_URL } from "../../config";
+
 
 type TimelineItem = {
   time: string;
@@ -39,6 +41,7 @@ export default function RouteTimeline() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [fadeAnim] = useState(new Animated.Value(0));
+  const insets = useSafeAreaInsets();
 
   // Enhanced error handling
   const showError = (message: string) => {
@@ -56,7 +59,7 @@ export default function RouteTimeline() {
             return;
           }
 
-          const res = await fetch(`${BACKEND}/manager/trips/${params.tripId}`, {
+          const res = await fetch(`${API_BASE_URL}/manager/trips/${params.tripId}`, {
             headers: { Authorization: `Bearer ${tok}` },
           });
 
@@ -102,7 +105,7 @@ export default function RouteTimeline() {
   
       // ✅ FIX: Call the /buses endpoint to get the list of all buses.
       // This is the same endpoint your working "view-schedules" page uses.
-      const url = `${BACKEND}/manager/buses`;
+      const url = `${API_BASE_URL}/manager/buses`;
       console.log("Request URL for buses:", url);
   
       const res = await fetch(url, {
@@ -181,77 +184,83 @@ export default function RouteTimeline() {
         showError('Authentication token not found');
         return;
       }
-  
       if (!busId) {
-        // This check is already here, but good to remember
         return; 
       }
   
-      // ✅ FIX: Format the date without timezone conversion
-      const year = selDate.getFullYear();
-      const month = (selDate.getMonth() + 1).toString().padStart(2, '0'); // Months are 0-indexed
-      const dayOfMonth = selDate.getDate().toString().padStart(2, '0');
+      // 1️⃣ Format the date as YYYY-MM-DD
+      const year       = selDate.getFullYear();
+      const month      = String(selDate.getMonth() + 1).padStart(2, '0');
+      const dayOfMonth = String(selDate.getDate()).padStart(2, '0');
       const dateForAPI = `${year}-${month}-${dayOfMonth}`;
   
-      // Use the correctly formatted date in the URL
-      const url = `${BACKEND}/manager/bus-trips?bus_id=${busId}&date=${dateForAPI}`;
-      console.log("Request URL:", url); // For debugging
+      // 2️⃣ Fetch trips for that bus + date
+      const url = `${API_BASE_URL}/manager/bus-trips?bus_id=${busId}&date=${dateForAPI}`;
+      console.log('[DEBUG] fetching trips from', url);
   
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const timeoutId  = setTimeout(() => controller.abort(), 10000);
   
       const tripsRes = await fetch(url, {
-        headers: { Authorization: `Bearer ${tok}` },
-        signal: controller.signal
+        headers:   { Authorization: `Bearer ${tok}` },
+        signal:    controller.signal,
       });
-      
       clearTimeout(timeoutId);
   
       if (!tripsRes.ok) {
-        throw new Error(`Failed to fetch trips: ${tripsRes.statusText}`);
+        throw new Error(`Failed to fetch trips: ${tripsRes.status} ${tripsRes.statusText}`);
       }
+      const trips: { id: number; number: string; start_time: string; end_time: string }[] =
+        await tripsRes.json();
   
-      const trips = await tripsRes.json();
+      // 3️⃣ Build timeline
       const timeline: TimelineItem[] = [];
   
-      // The rest of your function remains the same...
-      for (let tIdx = 0; tIdx < trips.length; tIdx++) {
-        const t = trips[tIdx];
+      for (const t of trips) {
+        // 3a) Always push a Trip header
+        timeline.push({
+          time:  `${t.start_time} – ${t.end_time}`,
+          label: `Trip ${t.number}`,
+          type:  'trip',
+        });
   
-        type StopRec = { stop_name: string; arrive_time: string; depart_time: string };
+        // 3b) Fetch the stops for this trip
         const stopsRes = await fetch(
-          `${BACKEND}/manager/stop-times?trip_id=${t.id}`,
+          `${API_BASE_URL}/manager/stop-times?trip_id=${t.id}`,
           { headers: { Authorization: `Bearer ${tok}` } }
         );
-  
         if (!stopsRes.ok) continue;
   
-        const stops: StopRec[] = await stopsRes.json();
+        const stops: { stop_name: string; arrive_time: string; depart_time: string }[] =
+          await stopsRes.json();
   
-        let prev: StopRec | undefined;
-        stops.forEach((st) => {
+        // 3c) For each stop, add service‐stop entries and in‐transit segments
+        let prev: typeof stops[0] | undefined;
+        for (const st of stops) {
+          // “In Transit” segment (if there’s a gap in times)
           if (prev && prev.depart_time !== st.arrive_time) {
             timeline.push({
-              time: `${prev.depart_time} – ${st.arrive_time}`,
+              time:  `${prev.depart_time} – ${st.arrive_time}`,
               label: `Trip ${t.number}`,
-              loc: `${prev.stop_name} → ${st.stop_name}`,
-              type: 'trip',
+              loc:   `${prev.stop_name} → ${st.stop_name}`,
+              type:  'trip',
             });
           }
+          // “Service Stop” entry
           if (st.arrive_time !== st.depart_time) {
             timeline.push({
-              time: `${st.arrive_time} – ${st.depart_time}`,
+              time:  `${st.arrive_time} – ${st.depart_time}`,
               label: 'Service Stop',
-              loc: st.stop_name,
-              type: 'service',
+              loc:   st.stop_name,
+              type:  'service',
             });
           }
           prev = st;
-        });
+        }
       }
   
+      // 4️⃣ Commit to state & animate
       setItems(timeline);
-  
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 500,
@@ -324,7 +333,7 @@ export default function RouteTimeline() {
   );
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingBottom: insets.bottom + 46 }]}>
       {/* Enhanced header with gradient */}
       <View style={styles.headerGradient}>
         <Text style={styles.headerTitle}>Route Timeline</Text>
@@ -348,7 +357,7 @@ export default function RouteTimeline() {
 >
   <Picker.Item label="Choose a bus..." value={undefined} />
   {buses.map((b) => (
-    <Picker.Item key={b.id} label={`Bus ${b.identifier}`} value={b.id} />
+    <Picker.Item key={b.id} label={b.identifier.replace(/^bus[-_]?/i, 'Bus ')} value={b.id} />
   ))}
 </Picker>
 

@@ -1,183 +1,489 @@
 // app/(tabs)/manager/ticket-sales.tsx
-
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Picker } from '@react-native-picker/picker';
+import dayjs from 'dayjs';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-    ActivityIndicator, Alert,
-    FlatList,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
+import DateTimePickerModal from 'react-native-modal-datetime-picker';
+import { API_BASE_URL } from "../../config";
 
-/* adjust to your LAN or prod URL */
-const BACKEND = 'http://192.168.1.7:5000';
+const { width } = Dimensions.get('window');
 
-interface Segment  { id: number; label: string; price: string }
-interface Ticket   { id: number; uuid: string; price: string; created_at: string; segment_label: string }
+interface TicketRow {
+  id: number;
+  bus: string;
+  commuter: string;
+  origin: string;
+  destination: string;
+  fare: string;
+}
+
+interface TicketStats {
+  totalFare: number;
+  totalTickets: number;
+  averageFare: number;
+}
 
 export default function TicketSales() {
   const router = useRouter();
+  const [tickets, setTickets] = useState<TicketRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [isPickerVisible, setPickerVisible] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const [segments,      setSegments]      = useState<Segment[]>([]);
-  const [selectedSeg,   setSelectedSeg]   = useState<number|undefined>(undefined);
-  const [tickets,       setTickets]       = useState<Ticket[]>([]);
-  const [loadingSeg,    setLoadingSeg]    = useState(true);
-  const [loadingTickets,setLoadingTickets]= useState(true);
-  const [purchasing,    setPurchasing]    = useState(false);
-
-  /* fetch fare‐segments for purchase */
-  const loadSegments = async () => {
-    setLoadingSeg(true);
-    try {
-      const tok = await AsyncStorage.getItem('@token');
-      const r   = await fetch(`${BACKEND}/manager/fare-segments`, {
-        headers: { Authorization: `Bearer ${tok}` }
-      });
-      setSegments(await r.json());
-    } catch(e){ console.error(e) }
-    finally { setLoadingSeg(false) }
+  // Calculate statistics
+  const stats: TicketStats = {
+    totalFare: tickets.reduce((sum, t) => sum + parseFloat(t.fare), 0),
+    totalTickets: tickets.length,
+    averageFare: tickets.length > 0 ? tickets.reduce((sum, t) => sum + parseFloat(t.fare), 0) / tickets.length : 0,
   };
 
-  /* fetch commuter's tickets */
-  const loadTickets = async () => {
-    setLoadingTickets(true);
-    try {
-      const tok = await AsyncStorage.getItem('@token');
-      const r   = await fetch(`${BACKEND}/ticket-sales`, {
-        headers: { Authorization: `Bearer ${tok}` }
-      });
-      setTickets(await r.json());
-    } catch(e){ console.error(e) }
-    finally { setLoadingTickets(false) }
-  };
-
-  useEffect(() => {
-    loadSegments();
-    loadTickets();
-  }, []);
-
-  /* purchase flow */
-  const handlePurchase = async () => {
-    if (!selectedSeg) return;
-
-    setPurchasing(true);
-    try {
-      const tok = await AsyncStorage.getItem('@token');
-      const r   = await fetch(`${BACKEND}/ticket-sales`, {
-        method:  'POST',
-        headers: {
-          Authorization: `Bearer ${tok}`,
-          'Content-Type':'application/json'
-        },
-        body: JSON.stringify({ fare_segment_id: selectedSeg })
-      });
-
-      if (!r.ok) {
-        const err = await r.json();
-        Alert.alert('Error', err.error || 'Purchase failed');
-      } else {
-        Alert.alert('Success', 'Ticket purchased');
-        setSelectedSeg(undefined);
-        loadTickets();
-      }
-    } catch(e) {
-      console.error(e);
-      Alert.alert('Error', 'Purchase failed');
-    } finally {
-      setPurchasing(false);
-    }
-  };
-
-  return (
-    <View style={st.container}>
-
-      {/* ── Header ── */}
-      <View style={st.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={24} color="#264d00" />
-        </TouchableOpacity>
-        <Text style={st.headerTxt}>Ticket Sales</Text>
-      </View>
-
-      {/* ── Purchase Card ── */}
-      <View style={st.card}>
-        {loadingSeg
-          ? <ActivityIndicator size="small" color="#264d00" />
-          : (
-            <Picker
-              selectedValue={selectedSeg}
-              onValueChange={setSelectedSeg}
-              style={st.picker}
-            >
-              <Picker.Item label="— choose fare segment —" value={undefined} />
-              {segments.map(seg => (
-                <Picker.Item
-                  key={seg.id}
-                  label={`${seg.label}   ₱${seg.price}`}
-                  value={seg.id}
-                />
-              ))}
-            </Picker>
-          )
+  const load = useCallback(
+    async (isRefresh = false) => {
+      isRefresh ? setRefreshing(true) : setLoading(true);
+      setError(null);
+      
+      try {
+        const token = await AsyncStorage.getItem('@token');
+        if (!token) {
+          throw new Error('Authentication token not found');
         }
 
-        <TouchableOpacity
-          style={[ st.btn, (!selectedSeg || purchasing) && st.btnDisabled ]}
-          disabled={!selectedSeg || purchasing}
-          onPress={handlePurchase}
+        const d = dayjs(selectedDate).format('YYYY-MM-DD');
+        const url = `${API_BASE_URL}/manager/tickets?date=${d}`;
+        
+        const res = await fetch(url, {
+          headers: { 
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        const text = await res.text();
+        
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${text}`);
+        }
+        
+        const data = JSON.parse(text);
+        const list: TicketRow[] = Array.isArray(data) ? data : data.tickets;
+        setTickets(list || []);
+        
+      } catch (e: any) {
+        console.error('[TicketSales] load error →', e.message || e);
+        setError(e.message || 'Failed to load ticket data');
+        setTickets([]);
+        
+        if (!isRefresh) {
+          Alert.alert('Error', 'Failed to load ticket sales data. Please try again.');
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [selectedDate]
+  );
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Date picker handlers
+  const showPicker = () => setPickerVisible(true);
+  const hidePicker = () => setPickerVisible(false);
+  const onConfirm = (d: Date) => {
+    setSelectedDate(d);
+    hidePicker();
+  };
+
+  // Quick date selection
+  const selectToday = () => setSelectedDate(new Date());
+
+  const renderTicketRow = ({ item, index }: { item: TicketRow; index: number }) => {
+    const numMatch = item.bus.match(/\d+/);
+    const busLabel = numMatch ? `Bus ${parseInt(numMatch[0], 10)}` : item.bus;
+    
+    return (
+      <View style={[styles.ticketCard, { backgroundColor: index % 2 === 0 ? '#ffffff' : '#f8f9fa' }]}>
+        <View style={styles.ticketCardHeader}>
+          <View style={styles.busTag}>
+            <Ionicons name="bus" size={14} color="#fff" />
+            <Text style={styles.busTagText}>{busLabel}</Text>
+          </View>
+          <Text style={styles.fareAmount}>₱{parseFloat(item.fare).toFixed(2)}</Text>
+        </View>
+        
+        <View style={styles.ticketCardBody}>
+          <View style={styles.commuterInfo}>
+            <Ionicons name="person" size={16} color="#666" />
+            <Text style={styles.commuterName}>{item.commuter}</Text>
+          </View>
+          
+          <View style={styles.routeInfo}>
+            <Ionicons name="location" size={16} color="#666" />
+            <Text style={styles.routeText}>{item.origin}</Text>
+            <Ionicons name="arrow-forward" size={14} color="#999" style={{ marginHorizontal: 8 }} />
+            <Text style={styles.routeText}>{item.destination}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderEmptyState = () => (
+    <View style={styles.emptyState}>
+      <Ionicons name="ticket-outline" size={64} color="#ccc" />
+      <Text style={styles.emptyStateTitle}>No Tickets Found</Text>
+      <Text style={styles.emptyStateSubtitle}>
+        No tickets were sold on {dayjs(selectedDate).format('MMMM D, YYYY')}
+      </Text>
+      <TouchableOpacity style={styles.emptyStateButton} onPress={() => load()}>
+        <Text style={styles.emptyStateButtonText}>Refresh</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
+      {/* Enhanced Header */}
+      <View style={styles.header}>
+   
+        <View style={styles.headerTitleContainer}>
+          <Text style={styles.headerTitle}>Ticket Sales</Text>
+          <Text style={styles.headerSubtitle}>Daily Revenue Overview</Text>
+        </View>
+        
+        <TouchableOpacity 
+          style={styles.refreshButton} 
+          onPress={() => load(true)}
+          activeOpacity={0.7}
         >
-          <Text style={st.btnTxt}>
-            {purchasing ? 'Purchasing…' : 'Purchase Ticket'}
-          </Text>
+          <Ionicons name="refresh" size={20} color="#fff" />
         </TouchableOpacity>
       </View>
 
-      {/* ── Ticket History ── */}
-      <Text style={st.sectionTitle}>Your Tickets</Text>
-      {loadingTickets
-        ? <ActivityIndicator size="large" color="#264d00" style={{flex:1}} />
-        : (
+      {/* Date Selection & Summary */}
+      <View style={styles.dateSection}>
+        <TouchableOpacity style={styles.dateSelector} onPress={showPicker}>
+          <View style={styles.dateSelectorContent}>
+            <Ionicons name="calendar" size={20} color="#2e7d32" />
+            <Text style={styles.dateSelectorText}>
+              {dayjs(selectedDate).format('MMMM D, YYYY')}
+            </Text>
+            <Ionicons name="chevron-down" size={16} color="#666" />
+          </View>
+        </TouchableOpacity>
+        
+        {/* Compact Summary */}
+        <View style={styles.compactSummary}>
+          <View style={styles.summaryItem}>
+            <Text style={styles.summaryValue}>₱{stats.totalFare.toFixed(2)}</Text>
+            <Text style={styles.summaryLabel}>Total Revenue</Text>
+          </View>
+          <View style={styles.summaryDivider} />
+          <View style={styles.summaryItem}>
+            <Text style={styles.summaryValue}>{stats.totalTickets}</Text>
+            <Text style={styles.summaryLabel}>Total Trips</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Content Area */}
+      <View style={styles.contentContainer}>
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#2e7d32" />
+            <Text style={styles.loadingText}>Loading ticket data...</Text>
+          </View>
+        ) : error ? (
+          <View style={styles.errorContainer}>
+            <Ionicons name="alert-circle" size={48} color="#f44336" />
+            <Text style={styles.errorTitle}>Error Loading Data</Text>
+            <Text style={styles.errorMessage}>{error}</Text>
+            <TouchableOpacity style={styles.retryButton} onPress={() => load()}>
+              <Text style={styles.retryButtonText}>Try Again</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
           <FlatList
             data={tickets}
-            keyExtractor={t => t.id.toString()}
-            contentContainerStyle={{ padding: 16 }}
-            renderItem={({item}) => (
-              <View style={st.ticketItem}>
-                <Text style={st.ticketLabel}>{item.segment_label}</Text>
-                <Text style={st.ticketInfo}>₱{item.price}</Text>
-                <Text style={st.ticketInfo}>
-                  {new Date(item.created_at).toLocaleString()}
-                </Text>
-                <Text style={st.ticketUuid}>UUID: {item.uuid}</Text>
-              </View>
-            )}
+            keyExtractor={(item) => String(item.id)}
+            renderItem={renderTicketRow}
+            refreshControl={
+              <RefreshControl 
+                refreshing={refreshing} 
+                onRefresh={() => load(true)}
+                colors={['#2e7d32']}
+                tintColor="#2e7d32"
+              />
+            }
+            ListEmptyComponent={renderEmptyState}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={tickets.length === 0 ? styles.emptyListContainer : styles.listContainer}
           />
-        )
-      }
+        )}
+      </View>
 
+      <DateTimePickerModal
+        isVisible={isPickerVisible}
+        mode="date"
+        onConfirm={onConfirm}
+        onCancel={hidePicker}
+        date={selectedDate}
+        maximumDate={new Date()}
+      />
     </View>
   );
 }
 
-const st = StyleSheet.create({
-  container:      { flex:1, backgroundColor:'#fff' },
-  header:         { flexDirection:'row', alignItems:'center', padding:12 },
-  headerTxt:      { flex:1, textAlign:'center', fontSize:18, fontWeight:'600' },
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f7fa',
+  },
+  
+  // Header Styles
+  header: {
+    backgroundColor: '#2e7d32',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 50,
+    paddingBottom: 20,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    position: 'relative',
+  },
+  headerTitleContainer: {
+    alignItems: 'center',
+  },
+  headerTitle: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  headerSubtitle: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 14,
+    marginTop: 2,
+  },
+  refreshButton: {
+    position: 'absolute',
+    right: 16,
+    top: 60,
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
 
-  card:           { margin:16, padding:16, borderRadius:12, backgroundColor:'#eef0ee' },
-  picker:         { backgroundColor:'#fff', borderRadius:8, marginBottom:12 },
-  btn:            { backgroundColor:'#264d00', borderRadius:8, padding:12, alignItems:'center' },
-  btnDisabled:    { opacity:0.5 },
-  btnTxt:         { color:'#fff', fontWeight:'600' },
+  // Date Section & Compact Summary
+  dateSection: {
+    backgroundColor: '#fff',
+    margin: 16,
+    borderRadius: 12,
+    padding: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  dateSelector: {
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  dateSelectorContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dateSelectorText: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#333',
+  },
+  compactSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingVertical: 8,
+  },
+  summaryItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  summaryValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2e7d32',
+  },
+  summaryLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
+  },
+  summaryDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: '#e0e0e0',
+  },
 
-  sectionTitle:   { fontSize:16,fontWeight:'600', paddingLeft:16, color:'#333', marginTop:8 },
-  ticketItem:     { backgroundColor:'#f9f9f9', padding:12, marginBottom:8, marginHorizontal:16, borderRadius:8 },
-  ticketLabel:    { fontSize:14, fontWeight:'600', marginBottom:4 },
-  ticketInfo:     { fontSize:12, color:'#555' },
-  ticketUuid:     { fontSize:10, color:'#999', marginTop:4 },
+  // Content Container
+  contentContainer: {
+    flex: 1,
+    paddingHorizontal: 16,
+  },
+  listContainer: {
+    paddingBottom: 20,
+  },
+  emptyListContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+
+  // Ticket Card Styles
+  ticketCard: {
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  ticketCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  busTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  busTagText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  fareAmount: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2e7d32',
+  },
+  ticketCardBody: {
+    gap: 8,
+  },
+  commuterInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  commuterName: {
+    marginLeft: 8,
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#333',
+  },
+  routeInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  routeText: {
+    fontSize: 14,
+    color: '#666',
+  },
+
+  // Loading & Error States
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#666',
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  errorTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  errorMessage: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  retryButton: {
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+
+  // Empty State
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 48,
+  },
+  emptyStateTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyStateSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  emptyStateButton: {
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  emptyStateButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
 });

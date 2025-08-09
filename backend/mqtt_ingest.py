@@ -1,82 +1,173 @@
 # backend/mqtt_ingest.py
-import json, threading, logging
+"""
+MQTT ingest service: listens for “people” messages over MQTT+WebSockets/TLS
+and writes them to sensor_readings—but only when the count actually changes.
+"""
+
+import json
+import logging
+import ssl
+import time
+
 import paho.mqtt.client as mqtt
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, event
 from sqlalchemy.orm import sessionmaker, scoped_session
-from models.bus            import Bus
-from models.sensor_reading import SensorReading
+from datetime import datetime, timezone, timedelta
 from config import Config
 
-MQTT_HOST = "35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud"
-MQTT_PORT = 8883
-MQTT_USER = "vanrodolf"
-MQTT_PASS = "Vanrodolf123."
-TOPIC     = "device/+/people"
+# ─── MODEL IMPORTS ────────────────────────────────────────────────────
+# Ensure relationship() targets resolve
+from models.fare_segment    import FareSegment   # noqa: F401
+from models.schedule        import Trip, StopTime  # noqa: F401
+from models.bus             import Bus
+from models.sensor_reading  import SensorReading
+from models.ticket_sale     import TicketSale     # noqa: F401
+from models.ticket_stop     import TicketStop     # noqa: F401
+from models.qr_template     import QRTemplate     # noqa: F401
+from models.user            import User           # noqa: F401
 
-# ── one engine / one session maker, detached from Flask ────────────────
-engine  = create_engine(Config.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
-Session = scoped_session(
-    sessionmaker(bind=engine, expire_on_commit=False)   # keep attrs usable after commit
+# ─── LOGGING ──────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s: %(message)s"
 )
-def on_message(client, userdata, msg):
-    """Insert people–counter readings coming from device/<id>/people messages."""
+
+# ─── MQTT CONFIG ──────────────────────────────────────────────────────
+MQTT_HOST     = "35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud"
+USE_WS        = True
+MQTT_PORT     = 8884 if USE_WS else 8883
+MQTT_PATH     = "/mqtt"      # only used when USE_WS=True
+MQTT_USER     = "vanrodolf"
+MQTT_PASS     = "Vanrodolf123."
+TOPIC_PEOPLE  = "device/+/people"
+
+
+# ─── DB SETUP ─────────────────────────────────────────────────────────
+engine = create_engine(Config.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
+
+# set the session time zone for every new DB connection
+from sqlalchemy import event
+@event.listens_for(engine, "connect")
+def _set_manila_timezone(dbapi_conn, _):
+    cur = dbapi_conn.cursor()
+    try:
+        cur.execute("SET time_zone = '+08:00'")
+    finally:
+        cur.close()
+
+# create the Session **after** the listener is in place
+from sqlalchemy.orm import sessionmaker, scoped_session
+Session = scoped_session(sessionmaker(bind=engine, expire_on_commit=False))
+
+
+transport = "websockets" if USE_WS else "tcp"
+client = mqtt.Client(client_id="pgt-ingest", transport=transport)
+client.username_pw_set(MQTT_USER, MQTT_PASS)
+
+
+# Configure TLS
+ssl_ctx = ssl.create_default_context()
+# if you're on a network without the public CAs, you could disable verification:
+# ssl_ctx.check_hostname = False
+# ssl_ctx.verify_mode   = ssl.CERT_NONE
+
+client.tls_set_context(ssl_ctx)
+
+# For websockets you must tell Paho the WS path:
+if USE_WS:
+    client.ws_set_options(path=MQTT_PATH)
+
+# ─── DEDUP CACHE ──────────────────────────────────────────────────────
+_last_totals: dict[int,int] = {}
+
+# ─── CALLBACKS ────────────────────────────────────────────────────────
+def on_connect(c, _u, _f, rc):
+    if rc == 0:
+        c.subscribe([(TOPIC_PEOPLE, 1)])
+    else:
+        logging.error("❌ MQTT connect failed rc=%s", rc)
+def now_ph():
+    # store civil Manila time; if you prefer UTC, use datetime.now(timezone.utc)
+    return datetime.utcnow() + timedelta(hours=8)
+
+
+def on_message(_c, _u, msg):
+    # only handle /people messages
+    if not msg.topic.endswith("/people"):
+        return
+
     sess = Session()
     try:
-        # --------------------- 1) basic JSON parse --------------------------
-        data = json.loads(msg.payload.decode("utf-8", errors="ignore"))
+        payload = json.loads(msg.payload.decode("utf-8", errors="ignore"))
+        _, device_id, _ = msg.topic.split("/", 2)
 
-        # --------------------- 2) figure out which bus ----------------------
-        # a) explicit in the payload
-        device_id = str(data.get("deviceId") or data.get("bus") or "").strip()
-
-        # b) derive it from the MQTT topic   device/<BUS-ID>/people
-        if not device_id:
-            parts = msg.topic.split("/")
-            if len(parts) >= 3 and parts[0] == "device":
-                device_id = parts[1]          # bus-01 / PGT-001 / 2 …
-        if not device_id:
-            raise ValueError("cannot deduce deviceId from payload or topic")
-
-        # look it up (case-insensitive)
-        bus = (
-            sess.query(Bus)
-                .filter(func.lower(Bus.identifier) == device_id.lower())
-                .first()
-        )
+        bus = (sess.query(Bus)
+                  .filter(func.lower(Bus.identifier) == device_id.lower())
+                  .first())
         if not bus:
-            raise ValueError(f"no bus in DB matching {device_id!r}")
+            logging.error("No bus found for device_id=%s", device_id)
+            return
 
-        # --------------------- 3) numeric values ----------------------------
-        in_c   = int(data["in"])
-        out_c  = int(data["out"])
-        total  = int(data["total"])
+        total = int(payload.get("total", 0))
+        if _last_totals.get(bus.id) == total:
+            return
+        _last_totals[bus.id] = total
 
-        # --------------------- 4) insert ------------------------------------
         reading = SensorReading(
-            in_count=in_c, out_count=out_c, total_count=total, bus_id=bus.id
+            in_count=int(payload.get("in", 0)),
+            out_count=int(payload.get("out", 0)),
+            total_count=total,
+            bus_id=bus.id,
+            timestamp=now_ph(),   # <-- set explicitly
         )
         sess.add(reading)
         sess.commit()
+        logging.debug("Inserted SensorReading id=%s for bus=%s",
+                      reading.id, device_id)
 
-        logging.debug("saved SensorReading id=%s for %s", reading.id, device_id)
-
-    except (KeyError, ValueError, TypeError, json.JSONDecodeError) as e:
-        logging.error("MQTT ingest skipped payload %s → %s", msg.payload, e)
-        sess.rollback()
     except Exception:
         sess.rollback()
-        logging.exception("MQTT ingest unexpected error")
+        logging.exception("Error ingesting %s → %s", msg.topic, msg.payload)
     finally:
         sess.close()
 
+# ─── RUNNERS ──────────────────────────────────────────────────────────
 def run():
-    client = mqtt.Client()
-    client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set()
+    """
+    Blocking: start MQTT loop on this thread.
+    Usage: python -m mqtt_ingest
+    """
+    client.on_connect = on_connect
     client.on_message = on_message
     client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
-    client.subscribe(TOPIC, qos=1)
     client.loop_forever()
 
 def start_in_background():
-    threading.Thread(target=run, daemon=True, name="mqtt-ingest").start()
+    """
+    Non-blocking: start MQTT loop in background.
+    Call this from your Flask app factory.
+    """
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
+    client.loop_start()
+    logging.info("MQTT ingest started in background (ws=%s)", USE_WS)
+
+# ─── PUBLISH HELPER ───────────────────────────────────────────────────
+def publish(topic: str, message: dict):
+    """
+    Publish JSON to broker (with retries).
+    """
+    payload = json.dumps(message)
+    for _ in range(3):
+        try:
+            client.publish(topic, payload, qos=1)
+            logging.debug("Published %s → %s", topic, payload)
+            return
+        except:
+            time.sleep(0.1)
+    logging.error("Failed to publish to %s after retries", topic)
+
+# ─── MODULE ENTRYPOINT ───────────────────────────────────────────────
+if __name__ == "__main__":
+    run()

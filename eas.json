@@ -6,13 +6,25 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_ANDROID_GRADLE_PLUGIN_VERSION": "8.5.2",
+        "EXPO_KOTLIN_VERSION": "1.9.24"
+      }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_ANDROID_GRADLE_PLUGIN_VERSION": "8.5.2",
+        "EXPO_KOTLIN_VERSION": "1.9.24"
+      }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_ANDROID_GRADLE_PLUGIN_VERSION": "8.5.2",
+        "EXPO_KOTLIN_VERSION": "1.9.24"
+      }
     }
   },
   "submit": {

@@ -1,6 +1,8 @@
+//app/(tabs)/pao/passenger-log.tsx
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ExpoNotify from 'expo-notifications';
+import * as Notifications from 'expo-notifications';
 import { useRouter } from 'expo-router';
 import mqtt, { MqttClient } from 'mqtt';
 import React, { useEffect, useRef, useState } from 'react';
@@ -17,6 +19,9 @@ import {
   View,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import { useBadge } from './badge-ctx';
+//router
+
 
 ExpoNotify.setNotificationHandler({
   handleNotification: async () => ({
@@ -32,6 +37,7 @@ ExpoNotify.setNotificationHandler({
 /* ───────── CONFIG ───────── */
 const MQTT_URL = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
 const MQTT_USER = 'vanrodolf';
+const router = useRouter();
 const MQTT_PASS = 'Vanrodolf123.';
 
 // Enhanced green theme colors
@@ -76,6 +82,17 @@ const AnimatedCard = ({ children, style, delay = 0 }: any) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
 
+  const router = useRouter();
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener(resp => {
+      const commuterId = resp.notification.request.content.data.commuterId;
+      if (commuterId) {
+        // deep-link directly to the “Requests” tab:
+        router.push('/pao/passenger-log#info');
+      }
+    });
+    return () => sub.remove();
+  }, []);
   useEffect(() => {
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -242,7 +259,7 @@ const AnimatedButton = ({ onPress, disabled, children, style }: any) => {
 
 /* ───────── component ───────── */
 export default function PassengerLogScreen() {
-  const router = useRouter();
+  const { setPassengerLog } = useBadge();
   const mapRef = useRef<MapView>(null);
   const mqttRef = useRef<MqttClient | null>(null);
   const tabSlideAnim = useRef(new Animated.Value(0)).current;
@@ -264,8 +281,7 @@ export default function PassengerLogScreen() {
     return isFinite(n) ? `bus-${n.toString().padStart(2, '0')}` : raw;
   };
   const handleCardPress = (request: RequestItem) => {
-    // Set the tapped request as the one to be acknowledged
-    setSelReq(request);
+    setSelReq({ ...request, status: 'Waiting for Acknowledgement' });
   
     // Update the list to visually show which request is selected
     setRequests(prev =>
@@ -305,6 +321,11 @@ export default function PassengerLogScreen() {
       setSelReq(null);
     }
   };
+
+    useEffect(() => {
+        const waiting = requests.filter(r => r.status === 'Waiting').length;
+        setPassengerLog(waiting);          // will trigger the red badge
+      }, [requests, setPassengerLog]);
   useEffect(() => {
     Animated.spring(tabSlideAnim, {
       toValue: tab === 'location' ? 0 : 1,
@@ -391,22 +412,40 @@ export default function PassengerLogScreen() {
           const t = msg.timestamp ? new Date(msg.timestamp) : new Date();
           const newRequest = { id: String(msg.id), time: t, status: 'Waiting' as const };
   
-          setRequests(existingRequests => {
-            const isDuplicate = existingRequests.some(req => req.id === newRequest.id);
-            if (isDuplicate) {
-              return existingRequests;
-            }
-            ExpoNotify.scheduleNotificationAsync({
-              content: {
-                title: '🚍 New Pickup Request',
-                body: `Commuter #${newRequest.id} is requesting to be picked up.`,
-                data: { type: 'pickup_request', commuterId: newRequest.id },
-              },
-              trigger: null, // Show immediately
-            });
+          setRequests(prev => {
+     
+               const idx = prev.findIndex(r => r.id === newRequest.id);
             
-            return [...existingRequests, newRequest];
-          });
+               // (1) same commuter & still waiting  → keep row as-is
+               if (idx !== -1 && prev[idx].status !== 'Acknowledged') {
+                 return prev;
+               }
+            
+               // (2) same commuter but was acknowledged → replace with fresh “Waiting”
+               if (idx !== -1) {
+                 const next = [...prev];
+                 next[idx] = { ...prev[idx], time: t, status: 'Waiting' };
+                 return next;
+               }
+            
+               // (3) brand-new commuter
+               return [...prev, newRequest];
+            });
+
+          } else if (msg.type === 'location-stop') {
+                  // commuter stopped live sharing; clean up UI
+                  const pid = String(msg.id);
+                  setPassengers(prev => prev.filter(p => p.id !== pid));
+                  setRequests(prev =>
+                    prev.map(r =>
+                      r.id === pid && r.status !== 'Acknowledged'
+                        ? { ...r, status: 'Acknowledged' }
+                        : r
+                    )
+                  );
+                  // if the selected request is the same commuter, clear selection
+                  setSelReq(prev => (prev?.id === pid ? null : prev));
+            
         }
       }
     });
@@ -435,7 +474,7 @@ export default function PassengerLogScreen() {
   }
 /* ----- 4) Enhanced UI ----- */
 return (
-  <SafeAreaView style={styles.container}>
+<SafeAreaView style={styles.container} edges={['bottom']}>
     <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
 
     {/* ENHANCED HEADER */}
@@ -514,7 +553,7 @@ return (
         </AnimatedCard>
       </View>
     ) : (
-      <>
+<View style={{ flex: 1 }}>
         {/* INFO TAB CONTENT */}
         {requests.length === 0 ? (
           <View style={styles.emptyContainer}>
@@ -574,7 +613,7 @@ return (
             </Text>
           </AnimatedButton>
         </View>
-      </>
+        </View>
     )}
   </SafeAreaView>
 );
@@ -900,9 +939,10 @@ emptyContainer: {
   // Acknowledge button
   acknowledgeContainer: {
     position: 'absolute',
-    bottom: 0,
+    bottom: 80,  
     left: 0,
     right: 0,
+    zIndex: 100, 
     backgroundColor: COLORS.white,
     padding: 20,
     paddingBottom: 34,

@@ -3,10 +3,10 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import dayjs from 'dayjs';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
+  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -14,18 +14,19 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import DateTimePickerModal from 'react-native-modal-datetime-picker';
+import { API_BASE_URL } from "../../config";
 
-const { width } = Dimensions.get('window');
-const BACKEND = 'http://192.168.1.7:5000';
 
 type Ticket = {
   id: number;
   referenceNo: string;
   commuter: string;
-  date: string;   // e.g. "April 30, 2025"
-  time: string;   // e.g. "7:20 am"
-  fare: string;   // already "15.00"
+  date: string; // e.g. "April 30, 2025"
+  time: string; // e.g. "7:20 am"
+  fare: string; // already "15.00"
   paid: boolean;
+  voided?: boolean;
 };
 
 export default function TicketRecords() {
@@ -35,17 +36,22 @@ export default function TicketRecords() {
   const [refreshing, setRefreshing] = useState(false);
   const [updating, setUpdating] = useState<number | null>(null);
 
-  /** Load tickets */
-  const loadTickets = async (isRefresh = false) => {
+  // Date picker state
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [isDatePickerVisible, setDatePickerVisibility] = useState(false);
+
+  /** Fetch tickets */
+  const loadTickets = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
 
     try {
       const tok = await AsyncStorage.getItem('@token');
-      const today = dayjs().format('YYYY-MM-DD');
-      const res = await fetch(`${BACKEND}/pao/tickets?date=${today}`, {
+      const dateToFetch = dayjs(selectedDate).format('YYYY-MM-DD');
+      const res = await fetch(`${API_BASE_URL}/pao/tickets?date=${dateToFetch}`, {
         headers: { Authorization: `Bearer ${tok}` },
       });
+      if (!res.ok) throw new Error('Failed to fetch tickets.');
       const data = await res.json();
       setTickets(Array.isArray(data) ? data : []);
     } catch (e) {
@@ -55,24 +61,17 @@ export default function TicketRecords() {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [selectedDate]);
 
-  /** Initial load */
-  useEffect(() => {
-    loadTickets();
-  }, []);
+  useEffect(() => { loadTickets(); }, [loadTickets]);
+  const onRefresh = () => loadTickets(true);
 
-  /** Pull to refresh */
-  const onRefresh = () => {
-    loadTickets(true);
-  };
-
-  /** Mark paid handler */
+  /** Mark as Paid */
   const markPaid = async (t: Ticket) => {
     setUpdating(t.id);
     try {
       const tok = await AsyncStorage.getItem('@token');
-      await fetch(`${BACKEND}/pao/tickets/${t.id}`, {
+      await fetch(`${API_BASE_URL}/pao/tickets/${t.id}/void`, {
         method: 'PATCH',
         headers: {
           Authorization: `Bearer ${tok}`,
@@ -80,7 +79,9 @@ export default function TicketRecords() {
         },
         body: JSON.stringify({ paid: true }),
       });
-      setTickets(prev => prev.map(x => (x.id === t.id ? { ...x, paid: true } : x)));
+      setTickets(prev =>
+        prev.map(x => x.id === t.id ? { ...x, paid: true } : x)
+      );
     } catch (e) {
       console.error('Mark-paid error', e);
     } finally {
@@ -88,12 +89,55 @@ export default function TicketRecords() {
     }
   };
 
-  // Stats
-  const totalTickets = tickets.length;
-  const paidTickets = tickets.filter(t => t.paid).length;
-  const totalRevenue = tickets
-    .filter(t => t.paid)
-    .reduce((sum, t) => sum + parseFloat(t.fare), 0);
+  /** Void ticket */
+  const voidTicket = (t: Ticket) => {
+    Alert.alert(
+      'Void ticket',
+      'Are you sure you want to void this ticket? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Void',
+          style: 'destructive',
+          onPress: async () => {
+            setUpdating(t.id);
+            try {
+              const tok = await AsyncStorage.getItem('@token');
+              await fetch(`${API_BASE_URL}/pao/tickets/${t.id}/void`, {
+                method: 'PATCH',
+                headers: {
+                  Authorization: `Bearer ${tok}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ voided: true }),
+              });
+              setTickets(prev =>
+                prev.map(x => x.id === t.id ? { ...x, voided: true } : x)
+              );
+            } catch (e) {
+              console.error('Void-ticket error', e);
+            } finally {
+              setUpdating(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Date picker handlers
+  const showDatePicker = () => setDatePickerVisibility(true);
+  const hideDatePicker = () => setDatePickerVisibility(false);
+  const handleConfirmDate = (date: Date) => {
+    setSelectedDate(date);
+    hideDatePicker();
+  };
+
+    const totalTickets = tickets.length;
+    const paidTickets = tickets.filter(t => t.paid && !t.voided).length;
+    const totalRevenue = tickets
+      .filter(t => t.paid && !t.voided)
+      .reduce((sum, t) => sum + parseFloat(t.fare), 0);
 
   return (
     <View style={styles.container}>
@@ -105,7 +149,11 @@ export default function TicketRecords() {
           </TouchableOpacity>
           <View style={styles.headerTextContainer}>
             <Text style={styles.headerTitle}>Ticket Records</Text>
-            <Text style={styles.headerSubtitle}>Today's transactions</Text>
+            <Text style={styles.headerSubtitle}>
+              {dayjs(selectedDate).isSame(dayjs(), 'day')
+                ? "Today's transactions"
+                : `Transactions for ${dayjs(selectedDate).format('MMM D')}`}
+            </Text>
           </View>
           <TouchableOpacity onPress={onRefresh} style={styles.refreshButton} disabled={refreshing}>
             <Ionicons
@@ -117,12 +165,22 @@ export default function TicketRecords() {
           </TouchableOpacity>
         </View>
         <View style={styles.dateContainer}>
-          <View style={styles.dateCard}>
+          <TouchableOpacity style={styles.dateCard} onPress={showDatePicker}>
             <Ionicons name="calendar-outline" size={16} color="#2e7d32" />
-            <Text style={styles.dateText}>{dayjs().format('MMMM D, YYYY')}</Text>
-          </View>
+            <Text style={styles.dateText}>{dayjs(selectedDate).format('MMMM D, YYYY')}</Text>
+            <Ionicons name="chevron-down" size={16} color="#2e7d32" style={{ marginLeft: 8 }} />
+          </TouchableOpacity>
         </View>
       </View>
+
+      <DateTimePickerModal
+        isVisible={isDatePickerVisible}
+        mode="date"
+        onConfirm={handleConfirmDate}
+        onCancel={hideDatePicker}
+        date={selectedDate}
+        maximumDate={new Date()}
+      />
 
       {/* Stats */}
       <View style={styles.statsContainer}>
@@ -147,7 +205,14 @@ export default function TicketRecords() {
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#2e7d32']} tintColor="#2e7d32" />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={['#2e7d32']}
+            tintColor="#2e7d32"
+          />
+        }
       >
         {loading ? (
           <View style={styles.loadingContainer}>
@@ -157,16 +222,31 @@ export default function TicketRecords() {
         ) : tickets.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="receipt-outline" size={60} color="#ccc" />
-            <Text style={styles.emptyTitle}>No Tickets Yet</Text>
-            <Text style={styles.emptySubtitle}>Tickets issued today will appear here</Text>
+            <Text style={styles.emptyTitle}>No Tickets Found</Text>
+            <Text style={styles.emptySubtitle}>No transactions were recorded on this date.</Text>
           </View>
         ) : (
-          tickets.map((ticket, index) => (
-            <View key={ticket.referenceNo} style={[styles.ticketCard, { marginTop: index === 0 ? 0 : 12 }]}>
+          tickets.map(ticket => (
+            <View key={ticket.id} style={styles.ticketCard}>
               {/* Status Badge */}
-              <View style={[styles.statusBadge, ticket.paid ? styles.statusPaid : styles.statusPending]}>
-                <Ionicons name={ticket.paid ? 'checkmark-circle' : 'time-outline'} size={12} color="#fff" />
-                <Text style={styles.statusText}>{ticket.paid ? 'PAID' : 'PENDING'}</Text>
+              <View
+                style={[
+                  styles.statusBadge,
+                  ticket.voided
+                    ? styles.statusVoided
+                    : ticket.paid
+                    ? styles.statusPaid
+                    : styles.statusPending,
+                ]}
+              >
+                <Ionicons
+                  name={ticket.voided ? 'close-circle' : ticket.paid ? 'checkmark-circle' : 'time-outline'}
+                  size={12}
+                  color="#fff"
+                />
+                <Text style={styles.statusText}>
+                  {ticket.voided ? 'VOIDED' : ticket.paid ? 'PAID' : 'PENDING'}
+                </Text>
               </View>
 
               {/* Header */}
@@ -205,7 +285,7 @@ export default function TicketRecords() {
                   <Text style={styles.fareLabel}>Total Fare</Text>
                   <Text style={styles.fareAmount}>₱{ticket.fare}</Text>
                 </View>
-                {!ticket.paid && (
+                {!ticket.paid && !ticket.voided && (
                   <TouchableOpacity
                     style={[styles.payButton, updating === ticket.id && styles.payButtonLoading]}
                     onPress={() => markPaid(ticket)}
@@ -216,25 +296,31 @@ export default function TicketRecords() {
                     ) : (
                       <Ionicons name="card-outline" size={16} color="#fff" />
                     )}
-                    <Text style={styles.payButtonText}>{updating === ticket.id ? 'Processing...' : 'Mark as Paid'}</Text>
+                    <Text style={styles.payButtonText}>
+                      {updating === ticket.id ? 'Processing...' : 'Mark as Paid'}
+                    </Text>
                   </TouchableOpacity>
                 )}
               </View>
 
-              {/* View / Edit actions */}
+              {/* View / Void actions */}
               <View style={styles.recordActions}>
                 <TouchableOpacity
                   style={styles.actionBtn}
-                  onPress={() => router.push({ pathname: '/pao/ticket-detail', params: { id: String(ticket.id) } })}
+                  onPress={() =>
+                    router.push({ pathname: '/pao/ticket-detail', params: { id: String(ticket.id) } })
+                  }
                 >
                   <Text style={styles.actionText}>View</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.actionBtn}
-                  onPress={() => router.push({ pathname: '/pao/ticket-detail', params: { id: String(ticket.id), edit: 'true' } })}
-                >
-                  <Text style={styles.actionText}>Edit</Text>
-                </TouchableOpacity>
+                {!ticket.voided && (
+                  <TouchableOpacity
+                    style={styles.actionBtn}
+                    onPress={() => voidTicket(ticket)}
+                  >
+                    <Text style={styles.actionText}>Void</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
           ))
@@ -244,31 +330,35 @@ export default function TicketRecords() {
   );
 }
 
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8faf9',
   },
-
+  statusVoided: {
+    backgroundColor: '#f44336',
+  },
   recordActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 12,
-    marginTop: 12,
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
   },
   actionBtn: {
-    backgroundColor: '#2e7d32',
+    backgroundColor: '#e8f5e9',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 6,
+    borderRadius: 16,
   },
   actionText: {
-    color: '#fff',
+    color: '#2e7d32',
     fontSize: 12,
     fontWeight: '600',
   },
-
-  // Header Styles
   headerContainer: {
     backgroundColor: '#2e7d32',
     paddingTop: 50,
@@ -311,8 +401,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: 'rgba(255,255,255,0.2)',
   },
-
-  // Date Display
   dateContainer: {
     paddingHorizontal: 20,
   },
@@ -320,20 +408,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: '#fff', // Changed for better contrast
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 10,
     borderRadius: 20,
     alignSelf: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
   dateText: {
-    color: '#fff',
+    color: '#333', // Changed for better contrast
     fontSize: 14,
     fontWeight: '600',
     marginLeft: 8,
   },
-
-  // Stats Overview
   statsContainer: {
     flexDirection: 'row',
     paddingHorizontal: 20,
@@ -352,15 +442,6 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
-  statIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#f0f8f0',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
   statNumber: {
     fontSize: 18,
     fontWeight: '700',
@@ -372,17 +453,13 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
   },
-
-  // Scroll View
   scrollView: {
     flex: 1,
   },
   scrollContent: {
     paddingHorizontal: 20,
-    paddingBottom: 100, // Space for tab bar
+    paddingBottom: 100,
   },
-
-  // Loading State
   loadingContainer: {
     alignItems: 'center',
     paddingVertical: 60,
@@ -392,20 +469,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
   },
-
-  // Empty State
   emptyContainer: {
     alignItems: 'center',
     paddingVertical: 60,
-  },
-  emptyIcon: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: '#f5f5f5',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
   },
   emptyTitle: {
     fontSize: 20,
@@ -419,8 +485,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
   },
-
-  // Ticket Card Styles
   ticketCard: {
     backgroundColor: '#fff',
     borderRadius: 16,
@@ -433,8 +497,6 @@ const styles = StyleSheet.create({
     elevation: 4,
     position: 'relative',
   },
-
-  // Status Badge
   statusBadge: {
     position: 'absolute',
     top: 16,
@@ -458,8 +520,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
   },
-
-  // Ticket Header
   ticketHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -472,16 +532,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
   },
-  avatarContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#e8f5e8',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
   commuterDetails: {
+    marginLeft: 12,
     flex: 1,
   },
   commuterLabel: {
@@ -499,8 +551,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#2e7d32',
   },
-
-  // Ticket Details
   ticketDetails: {
     flexDirection: 'row',
     gap: 24,
@@ -509,15 +559,7 @@ const styles = StyleSheet.create({
   detailItem: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  detailIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: '#f5f5f5',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 8,
+    gap: 8,
   },
   detailLabel: {
     fontSize: 11,
@@ -529,8 +571,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#333',
   },
-
-  // Fare Section
   fareSection: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -552,9 +592,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#2e7d32',
   },
-
-  // Pay Button
   payButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#ff9800',
     paddingHorizontal: 16,
     paddingVertical: 10,
@@ -573,9 +613,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     marginLeft: 6,
-  },
-  buttonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
   },
 });

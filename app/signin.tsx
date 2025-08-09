@@ -9,7 +9,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  SafeAreaView,
   StatusBar,
   StyleSheet,
   Text,
@@ -17,13 +16,15 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { API_BASE_URL } from './config';
 
 const { width } = Dimensions.get('window');
 
 export default function SignInScreenWrapper() {
   return (
     <>
-      <StatusBar barStyle="light-content" backgroundColor="#1a3d00" />
+      <StatusBar barStyle="light-content" backgroundColor="#1a3d00" translucent={false} />
       <Stack.Screen options={{ headerShown: false }} />
       <SignInScreen />
     </>
@@ -33,115 +34,88 @@ export default function SignInScreenWrapper() {
 function SignInScreen() {
   const router = useRouter();
 
-  /* ────────────────────────────────────────────────────── */
-  /* local state & animation values                        */
-  /* ────────────────────────────────────────────────────── */
-  const [username, setUsername]     = useState('');
-  const [password, setPassword]     = useState('');
-  const [isLoading, setIsLoading]   = useState(false);
+  const [username, setUsername]   = useState('');
+  const [password, setPassword]   = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
 
   const fadeAnim    = useRef(new Animated.Value(0)).current;
   const slideAnim   = useRef(new Animated.Value(50)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
-
-  const bubble1 = useRef(new Animated.Value(0)).current;
-  const bubble2 = useRef(new Animated.Value(0)).current;
+  const bubble1     = useRef(new Animated.Value(0)).current;
+  const bubble2     = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // Intro fade & slide
     Animated.parallel([
       Animated.timing(fadeAnim,  { toValue: 1, duration: 800, useNativeDriver: true }),
       Animated.timing(slideAnim, { toValue: 0, duration: 600, useNativeDriver: true }),
     ]).start();
 
-    // Perpetual bubbles
-    const float = (val: Animated.Value, delay = 0) =>
+    const float = (v: Animated.Value, delay = 0) =>
       Animated.loop(
         Animated.sequence([
-          Animated.timing(val, { toValue: 1, duration: 7000, delay, useNativeDriver: true }),
-          Animated.timing(val, { toValue: 0, duration: 7000, useNativeDriver: true }),
+          Animated.timing(v, { toValue: 1, duration: 7000, delay, useNativeDriver: true }),
+          Animated.timing(v, { toValue: 0, duration: 7000, useNativeDriver: true }),
         ])
       ).start();
+
     float(bubble1);
     float(bubble2, 3500);
   }, []);
 
   const handleSignIn = async () => {
-    // Clear previous session data first
     await AsyncStorage.multiRemove([
-      '@token',
-      '@role',
-      '@userId',
-      '@firstName',
-      '@lastName',
-      '@assignedBusId',
+      '@token','@role','@userId','@firstName','@lastName','@assignedBusId',
     ]);
-  
+
     if (!username.trim() || !password.trim()) {
       alert('Please fill in all fields');
       return;
     }
     setIsLoading(true);
-  
+
     Animated.sequence([
       Animated.timing(buttonScale, { toValue: 0.95, duration: 100, useNativeDriver: true }),
-      Animated.timing(buttonScale, { toValue: 1, duration: 100, useNativeDriver: true }),
+      Animated.timing(buttonScale, { toValue: 1,    duration: 100, useNativeDriver: true }),
     ]).start();
-  
+
     try {
-      const res = await fetch('http://192.168.1.7:5000/auth/login', {
+      const res = await fetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
-      const json = await res.json();
-      
-      console.log('--- LOGIN SERVER RESPONSE ---');
-      console.log(JSON.stringify(json, null, 2));
+
+      const raw = await res.text();
+      const json = JSON.parse(raw);
+
       if (res.ok && json.token) {
-   type DecodedToken = { user_id: number; role: string };
-const decoded = jwtDecode<DecodedToken>(json.token);
+        const decoded = jwtDecode<{ user_id: number; role: string }>(json.token);
         const pairs: [string, string][] = [
           ['@token', json.token],
           ['@role', decoded.role],
-          // This is now correct and will save the user's ID
           ['@userId', String(decoded.user_id)],
         ];
-  
-        if (json.user && json.user.firstName != null) {
-          pairs.push(['@firstName', json.user.firstName]);
-        }
-        if (json.user && json.user.lastName != null) {
-          pairs.push(['@lastName', json.user.lastName]);
-        }
-      
-        // Check for assigned bus ID
-        if (json.busId != null) {
-          pairs.push(['@assignedBusId', String(json.busId)]);
-        }
-        // Save the complete, correct data
+        if (json.user?.firstName) pairs.push(['@firstName', json.user.firstName]);
+        if (json.user?.lastName)  pairs.push(['@lastName',  json.user.lastName]);
+        if (json.busId != null)   pairs.push(['@assignedBusId', String(json.busId)]);
         await AsyncStorage.multiSet(pairs);
-        console.log('--- SAVING TO ASYNCSTORAGE ---');
-        console.log(pairs);
-  
-        await AsyncStorage.multiSet(pairs);
-        router.replace('/');
-  
-        router.replace('/');
+
+        router.replace(`/${decoded.role.toLowerCase()}`);
       } else {
         alert(json.error || 'Invalid credentials');
       }
-    } catch (e) {
-      console.error('Sign-in error:', e);
-      alert('A network error occurred during sign-in.');
+    } catch (err: any) {
+      alert(`Network error: ${err.message}`);
+      console.error(err);
     } finally {
       setIsLoading(false);
     }
   };
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* HEADER ------------------------------------------------------- */}
+      {/* HEADER */}
       <View style={styles.header}>
         <View style={styles.headerOverlay} />
 
@@ -158,21 +132,14 @@ const decoded = jwtDecode<DecodedToken>(json.token);
           </View>
         </Animated.View>
 
-        {/* floating bubbles */}
         <Animated.View
           style={[
             styles.bubble, styles.bubble1Pos,
             {
               transform: [
-                {
-                  translateY: bubble1.interpolate({ inputRange: [0, 1], outputRange: [0, -12] }),
-                },
-                {
-                  translateX: bubble1.interpolate({ inputRange: [0, 1], outputRange: [0, 14] }),
-                },
-                {
-                  scale: bubble1.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 1.08, 1] }),
-                },
+                { translateY: bubble1.interpolate({ inputRange: [0,1], outputRange: [0,-12] }) },
+                { translateX: bubble1.interpolate({ inputRange: [0,1], outputRange: [0,14] }) },
+                { scale: bubble1.interpolate({ inputRange: [0,0.5,1], outputRange: [1,1.08,1] }) },
               ],
             },
           ]}
@@ -182,22 +149,16 @@ const decoded = jwtDecode<DecodedToken>(json.token);
             styles.bubble, styles.bubble2Pos,
             {
               transform: [
-                {
-                  translateY: bubble2.interpolate({ inputRange: [0, 1], outputRange: [0, 10] }),
-                },
-                {
-                  translateX: bubble2.interpolate({ inputRange: [0, 1], outputRange: [0, -16] }),
-                },
-                {
-                  scale: bubble2.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 1.05, 1] }),
-                },
+                { translateY: bubble2.interpolate({ inputRange: [0,1], outputRange: [0,10] }) },
+                { translateX: bubble2.interpolate({ inputRange: [0,1], outputRange: [0,-16] }) },
+                { scale: bubble2.interpolate({ inputRange: [0,0.5,1], outputRange: [1,1.05,1] }) },
               ],
             },
           ]}
         />
       </View>
 
-      {/* FORM --------------------------------------------------------- */}
+      {/* FORM */}
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.formContainer}
@@ -277,8 +238,6 @@ const decoded = jwtDecode<DecodedToken>(json.token);
   );
 }
 
-/* -------------------------------------------------------------------- */
-/* STYLES                                                               */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8faf8' },
 
@@ -308,7 +267,7 @@ const styles = StyleSheet.create({
   title: { color: '#fff', fontSize: 38, fontWeight: 'bold', marginTop: 8, letterSpacing: 1 },
   titleUnderline: { width: 60, height: 4, backgroundColor: '#4a7c4a', marginTop: 12, borderRadius: 2 },
 
-  /* floating bubble base */
+  /* floating bubbles */
   bubble: {
     position: 'absolute',
     width: 80,
