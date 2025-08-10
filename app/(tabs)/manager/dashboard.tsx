@@ -1,5 +1,6 @@
 /* ------------------------------------------------------------------
  * MANAGER ▸ DASHBOARD  (analytics-first version)
+ * Header styled to match the Commuter dashboard
  * -----------------------------------------------------------------*/
 import {
   FontAwesome5,
@@ -14,9 +15,9 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextStyle,
@@ -25,27 +26,6 @@ import {
   ViewStyle,
 } from "react-native";
 import { API_BASE_URL } from "../../config";
-const { width } = Dimensions.get("window");
-
-/* ─────────────────────────── HELPERS ───────────────────────────── */
-const blob = (
-  w: number,
-  op: number,
-  top?: number,
-  left?: number,
-  bottom?: number,
-  right?: number
-): ViewStyle => ({
-  position: "absolute",
-  width: w,
-  height: w,
-  borderRadius: w / 2,
-  backgroundColor: `rgba(255,255,255,${op})`,
-  top,
-  left,
-  bottom,
-  right,
-});
 
 /* ─────────────────────────── TYPES ─────────────────────────────── */
 type TicketRow = { id: number; paid: boolean; fare: string };
@@ -92,7 +72,7 @@ export default function ManagerDashboard() {
     async function fetchMetrics() {
       try {
         const tok = await AsyncStorage.getItem("@token");
-        const hdr = { Authorization: `Bearer ${tok}` };
+        const hdr: HeadersInit = tok ? { Authorization: `Bearer ${tok}` } : {};
 
         /* TODAY’S TICKETS */
         const todayIso = dayjs().format("YYYY-MM-DD");
@@ -119,7 +99,7 @@ export default function ManagerDashboard() {
           setLast7(daily);
         }
 
-        /* ACTIVE BUSES (from cache) */
+        /* ACTIVE BUSES (from cache) — adjust to your persistence */
         const DEVICES = ["bus-01", "bus-02", "bus-03"];
         let online = 0;
         for (const id of DEVICES)
@@ -154,15 +134,12 @@ export default function ManagerDashboard() {
   /* ────────────────────────── UI ─────────────────────────────── */
   return (
     <SafeAreaView style={st.container}>
+      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* HEADER */}
+        {/* HEADER (imitates Commuter header) */}
         <LinearGradient colors={["#2E7D32", "#1B5E20", "#0D4F12"]} style={st.header}>
-          <View style={blob(200, 0.04, -50, -50)} />
-          <View style={blob(150, 0.05, undefined, undefined, -40, -40)} />
-          <View style={blob(100, 0.07, 80, width * 0.7)} />
-
           <View style={st.topRow}>
-            {/* user bubble */}
+            {/* profile bubble + greeting */}
             <View style={st.profileRow}>
               <LinearGradient colors={["#4CAF50", "#66BB6A"]} style={st.avatar}>
                 <Ionicons name="person" size={26} color="#fff" />
@@ -170,20 +147,16 @@ export default function ManagerDashboard() {
               <View style={st.welcome}>
                 <Text style={st.greet}>{greeting},</Text>
                 <Text style={st.user}>{name}</Text>
-                <View style={st.onlineRow}>
-                  <View style={st.dot} />
-                  <Text style={st.onlineTxt}>{clock}</Text>
-                </View>
               </View>
             </View>
 
-            {/* logout */}
-            <TouchableOpacity onPress={logout} style={st.logoutBtn}>
+            {/* logout pill */}
+            <TouchableOpacity onPress={logout} style={st.logoutBtn} activeOpacity={0.9}>
               <LinearGradient
                 colors={["rgba(255,255,255,0.2)", "rgba(255,255,255,0.1)"]}
                 style={st.logoutInner}
               >
-                <MaterialCommunityIcons name="logout-variant" size={24} color="#fff" />
+                <MaterialCommunityIcons name="logout" size={24} color="#fff" />
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -193,16 +166,10 @@ export default function ManagerDashboard() {
         <View style={st.sheet}>
           {/* KPI STRIP */}
           <View style={st.kpiRow}>
-            <KpiCard icon="bus"                label="Active" value={activeBuses} />
+            <KpiCard icon="bus"                label="Active"  value={activeBuses} />
             <KpiCard icon="ticket-confirmation" lib="Material" label="Tickets" value={ticketsToday} />
-            <KpiCard icon="cash"               label="Paid ₱" value={revenueToday?.toFixed(2)} />
-            <KpiCard
-              icon="exclamation-circle"
-              lib="FA5"
-              color="#C62828"
-              label="Unpaid"
-              value={unpaidToday}
-            />
+            <KpiCard icon="cash"               label="Paid ₱"  value={revenueToday?.toFixed(2)} />
+            <KpiCard icon="exclamation-circle" lib="FA5" color="#C62828" label="Unpaid" value={unpaidToday} />
           </View>
 
           {/* TREND TABLE */}
@@ -219,9 +186,7 @@ export default function ManagerDashboard() {
                 </View>
                 {last7.map((d) => (
                   <View style={st.tableRow} key={d.date}>
-                    <Text style={[st.tdDate, { flex: 2 }]}>
-                      {dayjs(d.date).format("MMM D")}
-                    </Text>
+                    <Text style={[st.tdDate, { flex: 2 }]}>{dayjs(d.date).format("MMM D")}</Text>
                     <Text style={st.td}>{d.tickets}</Text>
                     <Text style={st.td}>₱{d.revenue.toFixed(2)}</Text>
                   </View>
@@ -274,7 +239,7 @@ const st = StyleSheet.create<{
   welcome:     ViewStyle;
   greet:       TextStyle;
   user:        TextStyle;
-  onlineRow:   ViewStyle;
+  onlineRow:   ViewStyle;   // left in case you want to re-add live clock under name later
   dot:         ViewStyle;
   onlineTxt:   TextStyle;
   logoutBtn:   ViewStyle;
@@ -293,12 +258,11 @@ const st = StyleSheet.create<{
 }>({
   container: { flex: 1, backgroundColor: "#f8f9fa" },
 
-  /* header */
+  /* header — mirrors Commuter header */
   header: {
     paddingTop: 20,
     paddingBottom: 40,
     paddingHorizontal: 20,
-    overflow: "hidden",
   },
   topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   profileRow: { flexDirection: "row", alignItems: "center" },
@@ -308,15 +272,20 @@ const st = StyleSheet.create<{
     borderRadius: 28,
     justifyContent: "center",
     alignItems: "center",
+    borderWidth: 3,
+    borderColor: "rgba(255,255,255,0.3)", // ring like the commuter header
   },
   welcome: { marginLeft: 16 },
   greet: { color: "#E8F5E8", fontSize: 15, opacity: 0.9 },
-  user: { color: "#fff", fontSize: 22, fontWeight: "700" },
-  onlineRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
+  user: { color: "#fff", fontSize: 22, fontWeight: "700", marginTop: 2 },
+
+  // (Optional clock row placeholders if you want to add like PAO’s online row later)
+  onlineRow: { flexDirection: "row", alignItems: "center", marginTop: 4, display: "none" },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#4CAF50", marginRight: 6 },
   onlineTxt: { color: "#A5D6A7", fontSize: 12, fontWeight: "500" },
-  logoutBtn: { borderRadius: 22, overflow: "hidden" },
-  logoutInner: { padding: 12, borderRadius: 22 },
+
+  logoutBtn: { padding: 6 },
+  logoutInner: { width: 40, height: 40, borderRadius: 20, justifyContent: "center", alignItems: "center" },
 
   /* sheet */
   sheet: {
