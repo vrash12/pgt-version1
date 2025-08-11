@@ -1,23 +1,23 @@
 // app/(tabs)/pao/ticket-registration.tsx
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Picker } from '@react-native-picker/picker';
+
 import dayjs from 'dayjs';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
+  FlatList,
   Image,
   ImageSourcePropType,
   Platform,
-  ScrollView,
   StyleProp,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  ViewStyle,
+  ViewStyle
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import SearchablePicker from '../../../components/SearchablePicker';
@@ -100,11 +100,16 @@ export default function TicketRegistration() {
   const [loadingLists, setLoadingLists] = useState(true);
   const [calculating, setCalculating] = useState(false);
   const [markingPaid, setMarkingPaid] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const [ticket, setTicket] = useState<TicketResp | null>(null);
 
   const isMounted = useRef(true);
-
+  const stopNameById = useCallback(
+    (id?: number) => (id ? stops.find(s => s.id === id)?.name : undefined),
+    [stops]
+  );
+  
   const authHeader = useCallback(
     (extra: Record<string, string> = {}) =>
       ({
@@ -172,31 +177,40 @@ export default function TicketRegistration() {
   const handleCalculate = useCallback(async () => {
     if (calculating) return;
     if (!originId || !destId || commuterId === undefined) return;
-
+  
+    const now = dayjs().format('YYYY-MM-DDTHH:mm:ss');
+    const body = {
+      bus_id: Number(busId),
+      origin_stop_time_id: originId,
+      destination_stop_time_id: destId,
+      passenger_type: passengerType,
+      commuter_id: commuterId,
+      created_at: now,
+    };
+  
+    console.log('[PAO] POST /pao/tickets body →', body, {
+      originName: stopNameById(originId),
+      destinationName: stopNameById(destId),
+    });
+  
     setCalculating(true);
     try {
-      const now = dayjs().format('YYYY-MM-DDTHH:mm:ss');
       const res = await fetch(`${API_BASE_URL}/pao/tickets`, {
         method: 'POST',
         headers: authHeader({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          bus_id: Number(busId),
-          origin_stop_time_id: originId,
-          destination_stop_time_id: destId,
-          passenger_type: passengerType,
-          commuter_id: commuterId,
-          created_at: now,
-        }),
+        body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(`${res.status}`);
       const json: TicketResp = await res.json();
+      console.log('[PAO] /pao/tickets response ←', json);
+      if (!res.ok) throw new Error(`${res.status} ${JSON.stringify(json)}`);
       if (isMounted.current) setTicket(json);
     } catch (e) {
-      console.error(e);
+      console.error('[PAO] create ticket error:', e);
     } finally {
       if (isMounted.current) setCalculating(false);
     }
-  }, [authHeader, busId, calculating, commuterId, destId, originId, passengerType]);
+  }, [authHeader, busId, calculating, commuterId, destId, originId, passengerType, stopNameById]);
+  
 
   const markAsPaid = useCallback(async () => {
     if (!ticket || markingPaid) return;
@@ -217,244 +231,214 @@ export default function TicketRegistration() {
     }
   }, [authHeader, ticket, markingPaid]);
 
-  return (
-    <View style={styles.container}>
-      <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: tabBarHeight + 20 }]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {busCode && (
-          <View style={styles.busBanner}>
-            <Ionicons name="bus" size={18} color="#fff" style={{ marginRight: 6 }} />
-            <Text style={styles.busBannerText}>{busCode}</Text>
-          </View>
-        )}
+// 2) replace the outer <ScrollView> with a FlatList
+return (
+  <View style={styles.container}>
+    <FlatList
+      data={[]}
+      renderItem={() => null}
+      keyExtractor={() => 'header'}
+      nestedScrollEnabled
+      scrollEnabled={!pickerOpen}   // <-- important
+      removeClippedSubviews={false}        // ← prevents list from being cut/clipped
+      keyboardShouldPersistTaps="always"   // ← helps when interacting with inputs
+      contentContainerStyle={[styles.scrollContent, { paddingBottom: tabBarHeight + 20 }]}
 
-        <View style={styles.headerContainer}>
-          <View style={styles.header}>
-            <View style={styles.headerTextContainer}>
-              <Text style={styles.headerTitle}>Electronic Ticketing</Text>
-              <Text style={styles.headerSubtitle}>Quick & Easy Booking</Text>
+      ListHeaderComponent={
+        <>
+          {busCode && (
+            <View style={styles.busBanner}>
+              <Ionicons name="bus" size={18} color="#fff" style={{ marginRight: 6 }} />
+              <Text style={styles.busBannerText}>{busCode}</Text>
             </View>
-            <TouchableOpacity onPress={() => router.push('/pao/ticket-records')} style={styles.recordsBtn}>
-              <Ionicons name="receipt-outline" size={18} color="#fff" />
-              <Text style={styles.recordsBtnText}>Records</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.progressContainer}>
-            <View style={styles.progressBar}>
-              <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
-            </View>
-            <Text style={styles.progressText}>Complete all fields to proceed</Text>
-          </View>
-        </View>
-
-        <View style={styles.formContainer}>
-          {loadingLists ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#2e7d32" />
-              <Text style={styles.loadingText}>Loading data…</Text>
-            </View>
-          ) : (
-            <>
-              <SearchablePicker
-                icon="person-outline"
-                label="Select Commuter"
-                items={commuters}
-                value={commuterId}
-                onChange={setCommuterId}
-                zIndex={3000}
-              />
-
-              <PickerBlock
-                icon="location-outline"
-                label="Origin Stop"
-                selectedValue={originId}
-                onValueChange={setOriginId}
-                placeholder="— Select departure stop —"
-                items={pickerItems}
-              />
-
-              {originId && (
-                <View style={styles.routeArrow}>
-                  <Ionicons name="arrow-down" size={24} color="#2e7d32" />
-                </View>
-              )}
-
-              <PickerBlock
-                icon="flag-outline"
-                label="Destination Stop"
-                selectedValue={destId}
-                onValueChange={setDestId}
-                placeholder="— Select arrival stop —"
-                items={pickerItems}
-              />
-
-              <View style={styles.inputGroup}>
-                <View style={styles.labelContainer}>
-                  <Ionicons name="pricetag-outline" size={18} color="#2e7d32" />
-                  <Text style={styles.label}>Passenger Type</Text>
-                </View>
-                {(['regular', 'discount'] as const).map(t => (
-                  <TouchableOpacity
-                    key={t}
-                    style={[styles.radioOption, passengerType === t && styles.radioOptionSelected]}
-                    onPress={() => setPassengerType(t)}
-                  >
-                    <Image
-                      source={t === 'regular' ? regularImgs[0] : discountImgs[0]}
-                      style={styles.radioThumb}
-                      resizeMode="cover"
-                    />
-                    <View style={styles.radioContent}>
-                      <Text style={[styles.radioLabel, passengerType === t && styles.radioLabelSelected]}>
-                        {t === 'regular' ? 'Regular Fare' : 'Discount Fare'}
-                      </Text>
-                      <Text style={styles.radioDescription}>
-                        {t === 'regular' ? 'Standard pricing' : 'Student / Senior / PWD'}
-                      </Text>
-                    </View>
-                    <Ionicons
-                      name={passengerType === t ? 'radio-button-on' : 'radio-button-off'}
-                      size={20}
-                      color={passengerType === t ? '#2e7d32' : '#ccc'}
-                    />
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <ActionButton
-                disabled={
-                  calculating || markingPaid || !busId || !originId || !destId || commuterId === undefined
-                }
-                onPress={handleCalculate}
-                loading={calculating}
-                icon="calculator-outline"
-                text={calculating ? 'Calculating…' : 'Calculate Fare'}
-              />
-            </>
           )}
-        </View>
 
-        {ticket && (
-          <View style={styles.ticketSection}>
-            <Text style={styles.ticketSectionTitle}>Your Ticket</Text>
-
-            <View style={styles.ticketCard}>
-              <View style={styles.qrSection}>
-                <View style={styles.qrContainer}>
-                  {qrLoading && !qrError && (
-                    <ActivityIndicator style={StyleSheet.absoluteFillObject} color="#2e7d32" />
-                  )}
-                  {qrError && (
-                    <Ionicons
-                      name="alert-circle-outline"
-                      size={48}
-                      color="#f44336"
-                      style={StyleSheet.absoluteFillObject}
-                    />
-                  )}
-                  <Image
-                    source={{ uri: ticket.qr_url }}
-                    resizeMode="contain"
-                    style={{ width: '100%', height: '100%', borderRadius: 12 }}
-                    onLoadStart={() => {
-                      setQrLoading(true);
-                      setQrError(false);
-                    }}
-                    onLoadEnd={() => setQrLoading(false)}
-                    onError={() => {
-                      setQrLoading(false);
-                      setQrError(true);
-                    }}
-                  />
-                </View>
-                <Text style={styles.qrLabel}>Scan QR Code</Text>
+          {/* HEADER */}
+          <View style={styles.headerContainer}>
+            <View style={styles.header}>
+              <View style={styles.headerTextContainer}>
+                <Text style={styles.headerTitle}>Electronic Ticketing</Text>
+                <Text style={styles.headerSubtitle}>Quick & Easy Booking</Text>
               </View>
+              <TouchableOpacity onPress={() => router.push('/pao/ticket-records')} style={styles.recordsBtn}>
+                <Ionicons name="receipt-outline" size={18} color="#fff" />
+                <Text style={styles.recordsBtnText}>Records</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.progressContainer}>
+              <View style={styles.progressBar}>
+                <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
+              </View>
+              <Text style={styles.progressText}>Complete all fields to proceed</Text>
+            </View>
+          </View>
 
-              <View style={styles.ticketDetails}>
-                <View style={styles.ticketHeader}>
-                  <Text style={styles.referenceNo}>#{ticket.referenceNo}</Text>
-                  <View
-                    style={[styles.statusBadge, ticket.paid ? styles.statusPaid : styles.statusPending]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusText,
-                        ticket.paid ? styles.statusTextPaid : styles.statusTextPending,
-                      ]}
+          {/* FORM */}
+          <View style={styles.formContainer}>
+            {loadingLists ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#2e7d32" />
+                <Text style={styles.loadingText}>Loading data…</Text>
+              </View>
+            ) : (
+              <>
+               <SearchablePicker
+  icon="person-outline"
+  label="Select Commuter"
+  items={commuters}
+  value={commuterId}
+  onChange={setCommuterId}
+  onOpenChange={setPickerOpen}   // <-- add this prop in the picker
+  zIndex={3000}
+/>
+
+<SearchablePicker
+  icon="location-outline"
+  label="Origin Stop"
+  items={stops}
+  value={originId}
+  onChange={(id) => {
+    console.log('[PAO] Origin picked:', id, stopNameById(id));
+    setOriginId(id);
+    if (destId === id) setDestId(undefined);
+  }}
+  onOpenChange={setPickerOpen}
+  zIndex={2500}
+  listMode={Platform.OS === 'android' ? 'MODAL' : 'FLATLIST'}
+/>
+
+<SearchablePicker
+  icon="flag-outline"
+  label="Destination Stop"
+  items={stops}
+  value={destId}
+  onChange={(id) => {
+    console.log('[PAO] Destination picked:', id, stopNameById(id));
+    setDestId(id);
+  }}
+  onOpenChange={setPickerOpen}
+  zIndex={2000}
+  listMode={Platform.OS === 'android' ? 'MODAL' : 'FLATLIST'}
+/>
+
+
+                <View style={styles.inputGroup}>
+                  <View style={styles.labelContainer}>
+                    <Ionicons name="pricetag-outline" size={18} color="#2e7d32" />
+                    <Text style={styles.label}>Passenger Type</Text>
+                  </View>
+
+                  {(['regular', 'discount'] as const).map(t => (
+                    <TouchableOpacity
+                      key={t}
+                      style={[styles.radioOption, passengerType === t && styles.radioOptionSelected]}
+                      onPress={() => setPassengerType(t)}
                     >
-                      {ticket.paid ? 'PAID' : 'PENDING'}
-                    </Text>
-                  </View>
-                </View>
-
-                <RouteInfo labelL="From" valueL={ticket.origin} labelR="To" valueR={ticket.destination} />
-
-                <View style={styles.fareSection}>
-                  <View style={styles.fareInfo}>
-                    <Text style={styles.fareLabel}>
-                      {ticket.passengerType === 'regular' ? 'Regular Fare' : 'Discount Fare'}
-                    </Text>
-                    <Text style={styles.fareAmount}>₱{ticket.fare}</Text>
-                  </View>
+                      <Image
+                        source={t === 'regular' ? regularImgs[0] : discountImgs[0]}
+                        style={styles.radioThumb}
+                        resizeMode="cover"
+                      />
+                      <View style={styles.radioContent}>
+                        <Text style={[styles.radioLabel, passengerType === t && styles.radioLabelSelected]}>
+                          {t === 'regular' ? 'Regular Fare' : 'Discount Fare'}
+                        </Text>
+                        <Text style={styles.radioDescription}>
+                          {t === 'regular' ? 'Standard pricing' : 'Student / Senior / PWD'}
+                        </Text>
+                      </View>
+                      <Ionicons
+                        name={passengerType === t ? 'radio-button-on' : 'radio-button-off'}
+                        size={20}
+                        color={passengerType === t ? '#2e7d32' : '#ccc'}
+                      />
+                    </TouchableOpacity>
+                  ))}
                 </View>
 
                 <ActionButton
-                  styleOverride={[styles.paymentBtn, ticket.paid && styles.paymentBtnPaid]}
-                  disabled={ticket.paid || markingPaid}
-                  onPress={markAsPaid}
-                  loading={markingPaid}
-                  icon={ticket.paid ? 'checkmark-circle' : 'card-outline'}
-                  text={ticket.paid ? 'Payment Confirmed' : 'Mark as Paid'}
+                  disabled={calculating || markingPaid || !busId || !originId || !destId || commuterId === undefined}
+                  onPress={handleCalculate}
+                  loading={calculating}
+                  icon="calculator-outline"
+                  text={calculating ? 'Calculating…' : 'Calculate Fare'}
                 />
+              </>
+            )}
+          </View>
+
+          {/* TICKET */}
+          {ticket && (
+            <View style={styles.ticketSection}>
+              <Text style={styles.ticketSectionTitle}>Your Ticket</Text>
+              <View style={styles.ticketCard}>
+                <View style={styles.qrSection}>
+                  <View style={styles.qrContainer}>
+                    {qrLoading && !qrError && (
+                      <ActivityIndicator style={StyleSheet.absoluteFillObject} color="#2e7d32" />
+                    )}
+                    {qrError && (
+                      <Ionicons
+                        name="alert-circle-outline"
+                        size={48}
+                        color="#f44336"
+                        style={StyleSheet.absoluteFillObject}
+                      />
+                    )}
+                    <Image
+                      source={{ uri: ticket.qr_url }}
+                      resizeMode="contain"
+                      style={{ width: '100%', height: '100%', borderRadius: 12 }}
+                      onLoadStart={() => { setQrLoading(true); setQrError(false); }}
+                      onLoadEnd={() => setQrLoading(false)}
+                      onError={() => { setQrLoading(false); setQrError(true); }}
+                    />
+                  </View>
+                  <Text style={styles.qrLabel}>Scan QR Code</Text>
+                </View>
+
+                <View style={styles.ticketDetails}>
+                  <View style={styles.ticketHeader}>
+                    <Text style={styles.referenceNo}>#{ticket.referenceNo}</Text>
+                    <View style={[styles.statusBadge, ticket.paid ? styles.statusPaid : styles.statusPending]}>
+                      <Text style={[styles.statusText, ticket.paid ? styles.statusTextPaid : styles.statusTextPending]}>
+                        {ticket.paid ? 'PAID' : 'PENDING'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <RouteInfo labelL="From" valueL={ticket.origin} labelR="To" valueR={ticket.destination} />
+
+                  <View style={styles.fareSection}>
+                    <View style={styles.fareInfo}>
+                      <Text style={styles.fareLabel}>
+                        {ticket.passengerType === 'regular' ? 'Regular Fare' : 'Discount Fare'}
+                      </Text>
+                      <Text style={styles.fareAmount}>₱{ticket.fare}</Text>
+                    </View>
+                  </View>
+
+                  <ActionButton
+                    styleOverride={[styles.paymentBtn, ticket.paid && styles.paymentBtnPaid]}
+                    disabled={ticket.paid || markingPaid}
+                    onPress={markAsPaid}
+                    loading={markingPaid}
+                    icon={ticket.paid ? 'checkmark-circle' : 'card-outline'}
+                    text={ticket.paid ? 'Payment Confirmed' : 'Mark as Paid'}
+                  />
+                </View>
               </View>
             </View>
-          </View>
-        )}
-      </ScrollView>
-    </View>
-  );
+          )}
+        </>
+      }
+    />
+  </View>
+);
+
 }
 
-const PickerBlock = React.memo(function PickerBlock(props: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  selectedValue: any;
-  onValueChange: (v: any) => void;
-  placeholder: string;
-  items: { label: string; value: any }[];
-}) {
-  const isAndroid = Platform.OS === 'android';
-  const closedColor = props.selectedValue == null ? '#888' : '#222';
-  return (
-    <View style={styles.inputGroup}>
-      <View style={styles.labelContainer}>
-        <Ionicons name={props.icon} size={18} color="#2e7d32" />
-        <Text style={styles.label}>{props.label}</Text>
-      </View>
-      <View style={styles.pickerContainer}>
-        <Picker
-          selectedValue={props.selectedValue}
-          onValueChange={props.onValueChange}
-          mode={isAndroid ? 'dropdown' : undefined}
-          dropdownIconColor="#2e7d32"
-          style={[styles.picker, { color: closedColor }]}
-          itemStyle={styles.pickerItem}
-        >
-          <Picker.Item label={props.placeholder} value={undefined} color={isAndroid ? undefined : '#888'} />
-          {props.items.map(it => (
-            <Picker.Item key={String(it.value)} label={it.label} value={it.value} color={isAndroid ? undefined : '#222'} />
-          ))}
-        </Picker>
 
-        <Ionicons name="chevron-down" size={20} color="#666" style={styles.pickerIcon} />
-      </View>
-    </View>
-  );
-});
 
 const RouteInfo = React.memo(function RouteInfo({
   labelL,

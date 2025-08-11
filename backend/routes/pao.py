@@ -1,3 +1,4 @@
+#backend/routes/pao.py
 from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
@@ -21,6 +22,7 @@ from routes.auth import require_role
 from routes.tickets_static import jpg_name, QR_PATH
 from utils.qr import build_qr_payload
 from sqlalchemy.orm import joinedload
+from models.ticket_stop import TicketStop
 from sqlalchemy import func
 from datetime import datetime, timezone, timedelta
 
@@ -245,13 +247,16 @@ def pao_stop_times():
 @require_role("pao")
 def create_ticket():
     data = request.get_json(silent=True) or {}
-    current_app.logger.debug(f"[PAO:tickets POST] user={g.user.id} payload={data!r}")
+    current_app.logger.debug(f"[PAO:/tickets] raw payload: {data}")
 
     try:
         o_id = data.get("origin_stop_id") or data.get("origin_stop_time_id")
         d_id = data.get("destination_stop_id") or data.get("destination_stop_time_id")
         p = data.get("passenger_type")
         uid = data.get("commuter_id")
+        current_app.logger.debug(
+            f"[PAO:/tickets] resolved ids → origin_id={o_id} dest_id={d_id} passenger_type={p} commuter_id={uid}"
+        )
         client_ts = data.get("created_at")
 
         try:
@@ -261,6 +266,9 @@ def create_ticket():
 
         o = TicketStop.query.get(o_id)
         d = TicketStop.query.get(d_id)
+        current_app.logger.debug(
+            f"[PAO:/tickets] resolved names → origin={getattr(o,'stop_name',None)} dest={getattr(d,'stop_name',None)}"
+        )
         if not o or not d:
             return jsonify(error="origin or destination not found"), 400
 
@@ -294,24 +302,33 @@ def create_ticket():
         db.session.add(ticket)
         db.session.commit()
 
-        payload = build_qr_payload(ticket)
-        img = jpg_name(fare, p)
-        qr_url = url_for("static", filename=f"{QR_PATH}/{img}", _external=True)
+        current_app.logger.debug(
+            "[PAO:tickets POST] created id=%s | o_id=%s (%s) d_id=%s (%s)",
+            ticket.id, ticket.origin_stop_time_id, o.stop_name,
+            ticket.destination_stop_time_id, d.stop_name
+        )
 
-        return jsonify(
-            {
-                "id": ticket.id,
-                "referenceNo": ref,
-                "qr": payload,
-                "qr_url": qr_url,
-                "origin": o.stop_name,
-                "destination": d.stop_name,
-                "passengerType": p,
-                "commuter": f"{user.first_name} {user.last_name}",
-                "fare": f"{fare:.2f}",
-                "paid": False,
-            }
-        ), 201
+
+
+        payload = build_qr_payload(ticket, origin_name=o.stop_name, destination_name=d.stop_name)
+        qr_link = url_for("commuter.qr_image_for_ticket", ticket_id=ticket.id, _external=True)
+        img = jpg_name(fare, p)
+
+
+        return jsonify({
+            "id": ticket.id,
+            "referenceNo": ref,
+            "qr": payload,                 # JSON (what you have)
+            "qr_link": qr_link,
+            "qr_url": qr_url,              # your static ticket background (unchanged)
+            "origin": o.stop_name,
+            "destination": d.stop_name,
+            "passengerType": p,
+            "commuter": f"{user.first_name} {user.last_name}",
+            "fare": f"{fare:.2f}",
+            "paid": False,
+        }), 201
+
 
     except Exception as e:
         current_app.logger.exception("!! create_ticket unexpected error")
@@ -370,6 +387,19 @@ def list_tickets():
 
     out = []
     for t in qs:
+        # fallback name resolution
+        if t.origin_stop_time:
+            origin_name = t.origin_stop_time.stop_name
+        else:
+            ts = TicketStop.query.get(getattr(t, "origin_stop_time_id", None))
+            origin_name = ts.stop_name if ts else ""
+
+        if t.destination_stop_time:
+            destination_name = t.destination_stop_time.stop_name
+        else:
+            tsd = TicketStop.query.get(getattr(t, "destination_stop_time_id", None))
+            destination_name = tsd.stop_name if tsd else ""
+
         out.append(
             {
                 "id": t.id,
@@ -377,6 +407,8 @@ def list_tickets():
                 "commuter": f"{t.user.first_name} {t.user.last_name}",
                 "date": t.created_at.strftime("%B %d, %Y"),
                 "time": t.created_at.strftime("%I:%M %p").lstrip("0").lower(),
+                "origin": origin_name,               # ← add
+                "destination": destination_name,     # ← add
                 "fare": f"{float(t.price):.2f}",
                 "paid": bool(t.paid),
                 "voided": bool(t.voided),
@@ -397,20 +429,28 @@ def get_ticket(ticket_id):
     if not ticket:
         return jsonify(error="ticket not found"), 404
 
-    return jsonify(
-        {
-            "id": ticket.id,
-            "referenceNo": ticket.reference_no,
-            "commuter": f"{ticket.user.first_name} {ticket.user.last_name}",
-            "date": ticket.created_at.strftime("%B %d, %Y"),
-            "time": ticket.created_at.strftime("%I:%M %p").lstrip("0").lower(),
-            "fare": f"{float(ticket.price):.2f}",
-            "passengerType": ticket.passenger_type,
-            "paid": bool(ticket.paid),
-            "busId": ticket.bus_id,
-            "ticketUuid": ticket.ticket_uuid,
-        }
-    ), 200
+    origin_name = ticket.origin_stop_time.stop_name if ticket.origin_stop_time else (
+        TicketStop.query.get(getattr(ticket, "origin_stop_time_id", None)).stop_name
+        if getattr(ticket, "origin_stop_time_id", None) else ""
+    )
+    destination_name = ticket.destination_stop_time.stop_name if ticket.destination_stop_time else (
+        TicketStop.query.get(getattr(ticket, "destination_stop_time_id", None)).stop_name
+        if getattr(ticket, "destination_stop_time_id", None) else ""
+    )
+
+    return jsonify({
+        "id": ticket.id,
+        "referenceNo": ticket.reference_no,
+        "date": ticket.created_at.strftime("%B %d, %Y"),
+        "time": ticket.created_at.strftime("%I:%M %p").lstrip("0").lower(),
+        "fare": f"{float(ticket.price):.2f}",
+        "passengerType": ticket.passenger_type,
+        "paid": bool(ticket.paid),
+        "busId": ticket.bus_id,
+        "ticketUuid": ticket.ticket_uuid,
+        "origin": origin_name,              # ← add
+        "destination": destination_name,    # ← add
+    }), 200
 
 
 @pao_bp.route("/tickets/<int:ticket_id>", methods=["PATCH"])

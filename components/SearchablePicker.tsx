@@ -1,12 +1,12 @@
 // components/SearchablePicker.tsx
 import { Ionicons } from '@expo/vector-icons';
-import React, { useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import DropDownPicker from 'react-native-dropdown-picker';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Platform, StyleSheet, Text, View } from 'react-native';
+import DropDownPicker, { ValueType } from 'react-native-dropdown-picker';
 
-// The library expects items in {label: string, value: any} format.
-// Our data is {name: string, id: number}. We'll adapt.
 type Item = { id: number; name: string };
+
+type ListMode = 'FLATLIST' | 'MODAL' | 'SCROLLVIEW';
 
 interface Props {
   icon: keyof typeof Ionicons.glyphMap;
@@ -14,7 +14,13 @@ interface Props {
   items: Item[];
   value: number | undefined;
   onChange: (id: number) => void;
-  zIndex?: number; // ✨ Add zIndex prop for stacking context
+  onOpenChange?: (open: boolean) => void;
+  zIndex?: number;
+  maxHeight?: number;
+  listMode?: ListMode;         // optional override
+  placeholder?: string;
+  searchPlaceholder?: string;
+  disabled?: boolean;
 }
 
 export default function SearchablePicker({
@@ -23,19 +29,28 @@ export default function SearchablePicker({
   items,
   value,
   onChange,
-  zIndex = 1, // ✨ Default zIndex
+  onOpenChange,
+  zIndex = 1,
+  maxHeight = 320,
+  // Default to MODAL on Android (rock-solid scrolling), FLATLIST on iOS
+  listMode = Platform.OS === 'android' ? 'MODAL' : 'FLATLIST',
+  placeholder = '— Select —',
+  searchPlaceholder = 'Type to search…',
+  disabled = false,
 }: Props) {
   const [open, setOpen] = useState(false);
 
-  // Format our items to what the library expects
-  const formattedItems = items.map(item => ({
-    label: item.name,
-    value: item.id,
-  }));
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [open, onOpenChange]);
+
+  const formattedItems = useMemo(
+    () => items.map(i => ({ label: i.name, value: i.id })),
+    [items]
+  );
 
   return (
-    // The zIndex here is crucial. It creates a stacking context.
-    <View style={[styles.container, { zIndex }]}>
+    <View style={[styles.container, { zIndex, elevation: zIndex }]}>
       <View style={styles.labelRow}>
         <Ionicons name={icon} size={18} color="#2e7d32" />
         <Text style={styles.label}>{label}</Text>
@@ -43,26 +58,52 @@ export default function SearchablePicker({
 
       <DropDownPicker
         open={open}
-        value={value ?? null} // Use the value passed in props
+        value={value ?? null}
         items={formattedItems}
         setOpen={setOpen}
-        setValue={(callback) => {
-          // The callback returns the new value. We extract it and call onChange.
-          const newValue = callback(value);
-          if (newValue !== null) {
-            onChange(newValue);
-          }
+        // Drive parent state
+        onChangeValue={(val: ValueType | null) => {
+          if (typeof val === 'number') onChange(val);
         }}
-        searchable={true}
-        placeholder="— Choose a commuter —"
-        searchPlaceholder="Type name to search..."
-        listMode="FLATLIST" // This mode is performant
+        // Keep setValue for internal flows
+        setValue={(cb: any) => {
+          const next = typeof cb === 'function' ? cb(value ?? null) : cb;
+          if (typeof next === 'number') onChange(next);
+        }}
+        disabled={disabled}
+        searchable
+        placeholder={placeholder}
+        searchPlaceholder={searchPlaceholder}
+        listMode={listMode}
+        dropDownDirection="AUTO"
+        maxHeight={maxHeight}
+        // Ensure inner list scrolls when not using MODAL
+        flatListProps={
+          listMode === 'FLATLIST'
+            ? {
+                nestedScrollEnabled: true,
+                keyboardShouldPersistTaps: 'handled',
+                showsVerticalScrollIndicator: true,
+              }
+            : undefined
+        }
+        // Nice modal UX on Android
+        modalProps={
+          listMode === 'MODAL'
+            ? {
+                animationType: 'slide',
+                presentationStyle: 'pageSheet',
+              }
+            : undefined
+        }
+        modalTitle={listMode === 'MODAL' ? label : undefined}
+        // Styling
         style={styles.pickerStyle}
         dropDownContainerStyle={styles.dropDownContainer}
         placeholderStyle={styles.placeholder}
         searchTextInputStyle={styles.searchText}
         listItemLabelStyle={styles.itemText}
-        // This ensures the dropdown doesn't get cut off by other components
+        selectedItemLabelStyle={styles.selectedItemText}
         zIndex={zIndex}
       />
     </View>
@@ -70,31 +111,24 @@ export default function SearchablePicker({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    marginBottom: 24,
-  },
-  labelRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  container: { marginBottom: 24 },
+  labelRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
   label: { fontSize: 16, fontWeight: '600', color: '#333', marginLeft: 8 },
+
   pickerStyle: {
     backgroundColor: '#f8f9fa',
     borderColor: '#e9ecef',
     borderRadius: 12,
+    minHeight: 50,
   },
   dropDownContainer: {
     backgroundColor: '#f8f9fa',
     borderColor: '#e9ecef',
     borderRadius: 12,
+    overflow: 'hidden',
   },
-  placeholder: {
-    color: '#888',
-    fontSize: 16,
-  },
-  searchText: {
-    fontSize: 16,
-    borderColor: '#e9ecef',
-  },
-  itemText: {
-      fontSize: 16,
-      color: '#333'
-  }
+  placeholder: { color: '#888', fontSize: 16 },
+  searchText: { fontSize: 16, borderColor: '#e9ecef' },
+  itemText: { fontSize: 16, color: '#333' },
+  selectedItemText: { fontSize: 16, fontWeight: '700', color: '#2e7d32' },
 });

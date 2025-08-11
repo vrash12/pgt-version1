@@ -9,9 +9,7 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
 
-    "ios": {
-      "supportsTablet": true
-    },
+    "ios": { "supportsTablet": true },
 
     "android": {
       "adaptiveIcon": {
@@ -25,7 +23,7 @@
         }
       },
       "package": "com.justin_aldrei.pgt",
-       "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "resize"
     },
 
     "web": {
@@ -53,33 +51,28 @@
       ["expo-dev-client"],
       "expo-web-browser",
 
-
       [
         "expo-build-properties",
         {
           "android": {
             "compileSdkVersion": 35,
-            "targetSdkVersion": 35
+            "targetSdkVersion": 35,
+            "minSdkVersion": 24,
+            "kotlinVersion": "2.0.21"
           }
         }
       ],
       [
         "expo-updates",
-        {
-          "enabled": true
-        }
+        { "enabled": true }
       ]
     ],
 
-    "experiments": {
-      "typedRoutes": true
-    },
+    "experiments": { "typedRoutes": true },
 
     "extra": {
       "router": {},
-      "eas": {
-        "projectId": "86e6feea-3510-4bd5-a66b-e06315892f40"
-      }
+      "eas": { "projectId": "86e6feea-3510-4bd5-a66b-e06315892f40" }
     }
   }
 }

@@ -1,3 +1,4 @@
+//app/(tabs)/manager/ticket-sales.tsx
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import dayjs from 'dayjs';
@@ -45,62 +46,60 @@ export default function TicketSales() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [isPickerVisible, setPickerVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fadeAnim = React.useRef(new Animated.Value(0)).current; 
-  // Fetch tickets and revenue data
+
+  // Collapsible "Revenue Analysis" footer state & animation
+  const [showRevenue, setShowRevenue] = useState(false);
+  const fadeAnim = React.useRef(new Animated.Value(0)).current;
 
   const [stats, setStats] = useState<TicketStats>({
     totalFare: 0,
     totalTickets: 0,
     averageFare: 0,
   });
-  
+
   const fetchTickets = useCallback(async (isRefresh = false) => {
     isRefresh ? setRefreshing(true) : setLoading(true);
     setError(null);
-    
+
     try {
       const token = await AsyncStorage.getItem('@token');
       if (!token) {
         throw new Error('Authentication token not found');
       }
-  
+
       const d = dayjs(selectedDate).format('YYYY-MM-DD');
       const url = `${API_BASE_URL}/manager/tickets?date=${d}`;
-      
+
       const res = await fetch(url, {
-        headers: { 
+        headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       });
-      
+
       const text = await res.text();
-      
+
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${text}`);
       }
-      
+
       const data = JSON.parse(text);
       const list: TicketRow[] = Array.isArray(data) ? data : data.tickets;
       setTickets(list || []);
-      
+
       // Calculate stats after tickets are fetched
+      const total = list.reduce((sum, t) => sum + parseFloat(t.fare), 0);
       const newStats: TicketStats = {
-        totalFare: list.reduce((sum, t) => sum + parseFloat(t.fare), 0),
+        totalFare: total,
         totalTickets: list.length,
-        averageFare: list.length > 0
-          ? list.reduce((sum, t) => sum + parseFloat(t.fare), 0) / list.length
-          : 0,
+        averageFare: list.length > 0 ? total / list.length : 0,
       };
-  
-      // Set stats here
       setStats(newStats);
-      
     } catch (e: any) {
       console.error('[TicketSales] load error →', e.message || e);
       setError(e.message || 'Failed to load ticket data');
       setTickets([]);
-      
+
       if (!isRefresh) {
         Alert.alert('Error', 'Failed to load ticket sales data. Please try again.');
       }
@@ -110,18 +109,21 @@ export default function TicketSales() {
     }
   }, [selectedDate]);
 
-  
   useEffect(() => {
     fetchTickets();
   }, [fetchTickets]);
+
+  // Run fade animation when showing the revenue card
   useEffect(() => {
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 800,
-      useNativeDriver: true
-    }).start();
-  }, []);
-  
+    fadeAnim.setValue(0);
+    if (showRevenue) {
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 800,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [showRevenue, fadeAnim]);
 
   // Date picker handlers
   const showPicker = () => setPickerVisible(true);
@@ -131,13 +133,13 @@ export default function TicketSales() {
     hidePicker();
   };
 
-  // Quick date selection
+  // Quick date selection (kept in case you want to wire a button)
   const selectToday = () => setSelectedDate(new Date());
 
   const renderTicketRow = ({ item, index }: { item: TicketRow; index: number }) => {
     const numMatch = item.bus.match(/\d+/);
     const busLabel = numMatch ? `Bus ${parseInt(numMatch[0], 10)}` : item.bus;
-    
+
     return (
       <View style={[styles.ticketCard, { backgroundColor: index % 2 === 0 ? '#ffffff' : '#f8f9fa' }]}>
         <View style={styles.ticketCardHeader}>
@@ -147,13 +149,13 @@ export default function TicketSales() {
           </View>
           <Text style={styles.fareAmount}>₱{parseFloat(item.fare).toFixed(2)}</Text>
         </View>
-        
+
         <View style={styles.ticketCardBody}>
           <View style={styles.commuterInfo}>
             <Ionicons name="person" size={16} color="#666" />
             <Text style={styles.commuterName}>{item.commuter}</Text>
           </View>
-          
+
           <View style={styles.routeInfo}>
             <Ionicons name="location" size={16} color="#666" />
             <Text style={styles.routeText}>{item.origin}</Text>
@@ -178,16 +180,73 @@ export default function TicketSales() {
     </View>
   );
 
-// Revenue Analysis chart data
-const revenueData = {
-  labels: ['Total Sales'],
-  datasets: [
-    {
-      data: [stats.totalFare], // Use dynamic total revenue from stats
-    },
-  ],
-};
+  // Revenue Analysis chart data
+  const revenueData = {
+    labels: ['Total Sales'],
+    datasets: [
+      {
+        data: [stats.totalFare],
+      },
+    ],
+  };
 
+  // Footer with collapsible Revenue Analysis card
+  const renderRevenueFooter = () => (
+    <View style={{ paddingTop: 12, paddingBottom: 24 }}>
+      <TouchableOpacity
+        style={styles.footerToggle}
+        onPress={() => setShowRevenue(s => !s)}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="bar-chart" size={18} color="#2d5a2d" />
+        <Text style={styles.footerToggleText}>Revenue Analysis</Text>
+        <Ionicons
+          name={showRevenue ? 'chevron-up' : 'chevron-down'}
+          size={18}
+          color="#2d5a2d"
+        />
+      </TouchableOpacity>
+
+      {showRevenue && (
+        <Animated.View style={[styles.chartCard, { opacity: fadeAnim }]}>
+          <View style={styles.chartHeader}>
+            <Ionicons name="bar-chart" size={20} color="#2d5a2d" />
+            <Text style={styles.chartTitle}>Revenue Analysis</Text>
+          </View>
+
+          <View style={{ width: '100%', overflow: 'visible' }}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator
+              contentContainerStyle={{ paddingRight: 16 }}
+            >
+              <BarChart
+                data={revenueData}
+                width={width - 60}
+                height={240}
+                chartConfig={{
+                  backgroundGradientFrom: '#ffffff',
+                  backgroundGradientTo: '#ffffff',
+                  decimalPlaces: 0,
+                  color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
+                  labelColor: (opacity = 1) => `rgba(107, 114, 128, ${opacity})`,
+                  strokeWidth: 3,
+                  propsForDots: { r: '4', strokeWidth: '2', stroke: '#2d5a2d' },
+                }}
+                style={styles.chartStyle}
+                fromZero
+                yAxisLabel=""
+                yAxisSuffix=""
+                withHorizontalLabels
+                withVerticalLabels
+                showValuesOnTopOfBars
+              />
+            </ScrollView>
+          </View>
+        </Animated.View>
+      )}
+    </View>
+  );
 
   return (
     <View style={styles.container}>
@@ -197,9 +256,9 @@ const revenueData = {
           <Text style={styles.headerTitle}>Ticket Sales</Text>
           <Text style={styles.headerSubtitle}>Daily Revenue Overview</Text>
         </View>
-        
-        <TouchableOpacity 
-          style={styles.refreshButton} 
+
+        <TouchableOpacity
+          style={styles.refreshButton}
           onPress={() => fetchTickets(true)}
           activeOpacity={0.7}
         >
@@ -218,7 +277,7 @@ const revenueData = {
             <Ionicons name="chevron-down" size={16} color="#666" />
           </View>
         </TouchableOpacity>
-        
+
         {/* Compact Summary */}
         <View style={styles.compactSummary}>
           <View style={styles.summaryItem}>
@@ -255,14 +314,16 @@ const revenueData = {
             keyExtractor={(item) => String(item.id)}
             renderItem={renderTicketRow}
             refreshControl={
-              <RefreshControl 
-                refreshing={refreshing} 
+              <RefreshControl
+                refreshing={refreshing}
                 onRefresh={() => fetchTickets(true)}
                 colors={['#2e7d32']}
                 tintColor="#2e7d32"
               />
             }
             ListEmptyComponent={renderEmptyState}
+            // Attach collapsible Revenue Analysis as a footer (only when there are items)
+            ListFooterComponent={tickets.length > 0 ? renderRevenueFooter() : null}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={tickets.length === 0 ? styles.emptyListContainer : styles.listContainer}
           />
@@ -277,46 +338,6 @@ const revenueData = {
         date={selectedDate}
         maximumDate={new Date()}
       />
-
-{/* Revenue Analysis */}
-<Animated.View style={[styles.chartCard, { opacity: fadeAnim }]}>
-  <View style={styles.chartHeader}>
-    <Ionicons name="bar-chart" size={20} color="#2d5a2d" />
-    <Text style={styles.chartTitle}>Revenue Analysis</Text>
-  </View>
-
-  {/* Horizontal scrollable chart */}
-  <View style={{ width: '100%', overflow: 'visible' }}>
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator
-      contentContainerStyle={{ paddingRight: 16 }}
-    >
-      <BarChart
-        data={revenueData}
-        width={width - 60}           // dynamic width
-        height={240}
-        chartConfig={{
-          backgroundGradientFrom: '#ffffff',
-          backgroundGradientTo: '#ffffff',
-          decimalPlaces: 0,
-          color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
-          labelColor: (opacity = 1) => `rgba(107, 114, 128, ${opacity})`,
-          strokeWidth: 3,
-          propsForDots: { r: '4', strokeWidth: '2', stroke: '#2d5a2d' },
-        }}
-        style={styles.chartStyle}
-        fromZero
-        yAxisLabel=""
-        yAxisSuffix=""
-        withHorizontalLabels
-        withVerticalLabels
-        showValuesOnTopOfBars
-      />
-    </ScrollView>
-  </View>
-</Animated.View>
-
     </View>
   );
 }
@@ -352,243 +373,270 @@ const styles = StyleSheet.create({
   },
   headerSubtitle: {
     color: 'rgba(255,255,255,0.8)',
-fontSize: 14,
-marginTop: 2,
-},
-refreshButton: {
-position: 'absolute',
-right: 16,
-top: 60,
-padding: 8,
-borderRadius: 20,
-backgroundColor: 'rgba(255,255,255,0.1)',
-},
+    fontSize: 14,
+    marginTop: 2,
+  },
+  refreshButton: {
+    position: 'absolute',
+    right: 16,
+    top: 60,
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
 
-// Date Section & Compact Summary
-dateSection: {
-backgroundColor: '#fff',
-margin: 16,
-borderRadius: 12,
-padding: 16,
-elevation: 2,
-shadowColor: '#000',
-shadowOffset: { width: 0, height: 1 },
-shadowOpacity: 0.1,
-shadowRadius: 2,
-},
-dateSelector: {
-borderWidth: 1,
-borderColor: '#e0e0e0',
-borderRadius: 8,
-padding: 12,
-marginBottom: 16,
-},
-dateSelectorContent: {
-flexDirection: 'row',
-alignItems: 'center',
-},
-dateSelectorText: {
-flex: 1,
-marginLeft: 8,
-fontSize: 16,
-fontWeight: '500',
-color: '#333',
-},
-compactSummary: {
-flexDirection: 'row',
-alignItems: 'center',
-justifyContent: 'space-around',
-paddingVertical: 8,
-},
-summaryItem: {
-alignItems: 'center',
-flex: 1,
-},
-summaryValue: {
-fontSize: 18,
-fontWeight: 'bold',
-color: '#2e7d32',
-},
-summaryLabel: {
-fontSize: 12,
-color: '#666',
-textAlign: 'center',
-fontWeight: '500',
-},
-summaryDivider: {
-width: 1,
-height: 30,
-backgroundColor: '#e0e0e0',
-},
+  // Date Section & Compact Summary
+  dateSection: {
+    backgroundColor: '#fff',
+    margin: 16,
+    borderRadius: 12,
+    padding: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  dateSelector: {
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  dateSelectorContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dateSelectorText: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#333',
+  },
+  compactSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingVertical: 8,
+  },
+  summaryItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  summaryValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2e7d32',
+  },
+  summaryLabel: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  summaryDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: '#e0e0e0',
+  },
 
-// Content Container
-contentContainer: {
-flex: 1,
-paddingHorizontal: 16,
-},
-listContainer: {
-paddingBottom: 20,
-},
-emptyListContainer: {
-flex: 1,
-justifyContent: 'center',
-},
+  // Content Container
+  contentContainer: {
+    flex: 1,
+    paddingHorizontal: 16,
+  },
+  listContainer: {
+    paddingBottom: 20,
+  },
+  emptyListContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
 
-// Ticket Card Styles
-ticketCard: {
-borderRadius: 12,
-padding: 16,
-marginBottom: 8,
-borderWidth: 1,
-borderColor: '#e0e0e0',
-},
-ticketCardHeader: {
-flexDirection: 'row',
-justifyContent: 'space-between',
-alignItems: 'center',
-marginBottom: 12,
-},
-busTag: {
-flexDirection: 'row',
-alignItems: 'center',
-backgroundColor: '#2e7d32',
-paddingHorizontal: 8,
-paddingVertical: 4,
-borderRadius: 12,
-},
-busTagText: {
-color: '#fff',
-fontSize: 12,
-fontWeight: '600',
-marginLeft: 4,
-},
-fareAmount: {
-fontSize: 18,
-fontWeight: 'bold',
-color: '#2e7d32',
-},
-ticketCardBody: {
-gap: 8,
-},
-commuterInfo: {
-flexDirection: 'row',
-alignItems: 'center',
-},
-commuterName: {
-marginLeft: 8,
-fontSize: 16,
-fontWeight: '500',
-color: '#333',
-},
-routeInfo: {
-flexDirection: 'row',
-alignItems: 'center',
-},
-routeText: {
-fontSize: 14,
-color: '#666',
-},
+  // Ticket Card Styles
+  ticketCard: {
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  ticketCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  busTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  busTagText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  fareAmount: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2e7d32',
+  },
+  ticketCardBody: {
+    gap: 8,
+  },
+  commuterInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  commuterName: {
+    marginLeft: 8,
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#333',
+  },
+  routeInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  routeText: {
+    fontSize: 14,
+    color: '#666',
+  },
 
-// Loading & Error States
-loadingContainer: {
-flex: 1,
-justifyContent: 'center',
-alignItems: 'center',
-},
-loadingText: {
-marginTop: 12,
-fontSize: 16,
-color: '#666',
-},
-errorContainer: {
-flex: 1,
-justifyContent: 'center',
-alignItems: 'center',
-paddingHorizontal: 32,
-},
-errorTitle: {
-fontSize: 18,
-fontWeight: 'bold',
-color: '#333',
-marginTop: 16,
-marginBottom: 8,
-},
-errorMessage: {
-fontSize: 14,
-color: '#666',
-textAlign: 'center',
-marginBottom: 24,
-},
-retryButton: {
-backgroundColor: '#2e7d32',
-paddingHorizontal: 24,
-paddingVertical: 12,
-borderRadius: 8,
-},
-retryButtonText: {
-color: '#fff',
-fontWeight: '600',
-},
+  // Loading & Error States
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#666',
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  errorTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  errorMessage: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  retryButton: {
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
 
-// Empty State
-emptyState: {
-alignItems: 'center',
-paddingVertical: 48,
-},
-emptyStateTitle: {
-fontSize: 18,
-fontWeight: 'bold',
-color: '#333',
-marginTop: 16,
-marginBottom: 8,
-},
-emptyStateSubtitle: {
-fontSize: 14,
-color: '#666',
-textAlign: 'center',
-marginBottom: 24,
-},
-emptyStateButton: {
-backgroundColor: '#2e7d32',
-paddingHorizontal: 24,
-paddingVertical: 12,
-borderRadius: 8,
-},
-emptyStateButtonText: {
-color: '#fff',
-fontWeight: '600',
-},
+  // Empty State
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 48,
+  },
+  emptyStateTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyStateSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  emptyStateButton: {
+    backgroundColor: '#2e7d32',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  emptyStateButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
 
-// Chart Styles
-chartCard: {
-marginHorizontal: 20,
-marginTop: 20,
-backgroundColor: '#fff',
-borderRadius: 20,
-padding: 20,
-shadowColor: '#2d5a2d',
-shadowOffset: { width: 0, height: 4 },
-shadowOpacity: 0.1,
-shadowRadius: 12,
-elevation: 6,
-alignItems: 'center',
-borderWidth: 1,
-borderColor: '#e8f5e8',
-},
-chartHeader: {
-flexDirection: 'row',
-alignItems: 'center',
-alignSelf: 'flex-start',
-marginBottom: 16,
-},
-chartTitle: {
-fontSize: 16,
-fontWeight: '700',
-color: '#2d5a2d',
-marginLeft: 8,
-},
-chartStyle: {
-borderRadius: 16,
-marginVertical: 8,
-},
+  // Revenue footer toggle
+  footerToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e8f5e8',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+    marginHorizontal: 16,
+    marginBottom: 10,
+  },
+  footerToggleText: {
+    flex: 1,
+    marginLeft: 8,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#2d5a2d',
+  },
+
+  // Chart Styles
+  chartCard: {
+    marginHorizontal: 20,
+    marginTop: 10,
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#2d5a2d',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e8f5e8',
+  },
+  chartHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginBottom: 16,
+  },
+  chartTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#2d5a2d',
+    marginLeft: 8,
+  },
+  chartStyle: {
+    borderRadius: 16,
+    marginVertical: 8,
+  },
 });

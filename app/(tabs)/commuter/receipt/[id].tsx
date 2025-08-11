@@ -1,165 +1,200 @@
+// app/(tabs)/commuter/receipt/[id].tsx
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLocalSearchParams } from 'expo-router';
 import React from 'react';
 import {
-    Image,
-    SafeAreaView,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    View,
+  ActivityIndicator,
+  Image,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
+import { API_BASE_URL } from '../../../config'; // adjust path if needed
 
-/* ── types ─────────────────────────────────────────────── */
 type Receipt = {
-  id:           number;
-  referenceNo:  string;
-  date:         string;
-  time:         string;
-  origin:       string;
-  destination:  string;
-  passengerType?: 'Regular' | 'Discount'; 
-  commuter?:    string;
-  fare:         string;
-  qr?:          string;
-  qr_url?:      string;
-  paid:         boolean;
+  id: number;
+  referenceNo: string;
+  date: string;
+  time: string;
+  origin: string;
+  destination: string;
+  passengerType?: 'Regular' | 'Discount';
+  commuter?: string;
+  fare: string;
+  qr?: string;
+  qr_url?: string;
+  paid: boolean;
 };
 
-/* ── component ─────────────────────────────────────────── */
 export default function ReceiptDetail() {
-  /* pull the JSON blob encoded in the URL */
-  const { data } = useLocalSearchParams<{ data?: string }>();
+  const { id, data } = useLocalSearchParams<{ id?: string; data?: string }>();
+  const [receipt, setReceipt] = React.useState<Receipt | null>(null);
+  const [loading, setLoading] = React.useState<boolean>(true);
 
-  const receipt: Receipt = React.useMemo(() => {
-    if (!data) {
-      // Sample data for preview
-      return {
-        id: 1,
-        referenceNo: "PGT-001",
-        date: "May 01, 2025",
-        time: "8:33 am",
-        origin: "SM Tarlac",
-        destination: "Paniqui",
-        passengerType: "Regular",
-        commuter: "Van Rodolf",
-        fare: "20.00",
-        qr: "PGT001-20250501-0833",
-        paid: true
-      } as Receipt;
+
+
+console.log('[ReceiptDetail] raw data param:', data);
+
+let parsed: any = null;
+try {
+  parsed = data ? JSON.parse(decodeURIComponent(data)) : null;
+  console.log('[ReceiptDetail] parsed:', parsed);
+} catch (e) {
+  console.warn('[ReceiptDetail] parse error:', e);
+}
+
+  React.useEffect(() => {
+    let parsed: Receipt | null = null;
+    if (data) {
+      try {
+        parsed = JSON.parse(decodeURIComponent(data));
+      } catch (e) {
+        // ignore; we'll fetch below
+      }
     }
-    try {
-      return JSON.parse(decodeURIComponent(data));
-    } catch {
-      return {} as any;
+    // If parsed has origin/destination, we're good. Otherwise, fetch by ID.
+    if (parsed?.origin && parsed?.destination) {
+      setReceipt(parsed);
+      setLoading(false);
+      return;
     }
-  }, [data]);
+
+    // Fallback: fetch by ID
+    (async () => {
+      try {
+        if (!id) {
+          // As a last resort, show any parsed data (even if partial) or stop loading
+          if (parsed) setReceipt(parsed);
+          setLoading(false);
+          return;
+        }
+        const tok = await AsyncStorage.getItem('@token');
+        const headers: Record<string, string> = {};
+        if (tok) headers.Authorization = `Bearer ${tok}`;
+
+        const resp = await fetch(`${API_BASE_URL}/commuter/tickets/${id}`, { headers });
+        if (!resp.ok) throw new Error(`Server ${resp.status}`);
+        const json = (await resp.json()) as Receipt;
+        setReceipt(json);
+      } catch (err) {
+        // If fetch fails but parsed exists, at least show that
+        if (parsed) setReceipt(parsed);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [id, data]);
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar backgroundColor="#5a7c65" barStyle="light-content" />
+        <View style={[styles.background, { alignItems: 'center', justifyContent: 'center' }]}>
+          <ActivityIndicator size="large" color="#fff" />
+          <Text style={{ color: '#fff', marginTop: 12 }}>Loading receipt…</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // still null? show a friendly fallback
+  if (!receipt) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar backgroundColor="#5a7c65" barStyle="light-content" />
+        <View style={[styles.background, { alignItems: 'center', justifyContent: 'center' }]}>
+          <Text style={{ color: '#fff' }}>Receipt not found.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar backgroundColor="#5a7c65" barStyle="light-content" />
       <View style={styles.background}>
-        <ScrollView 
-          contentContainerStyle={styles.scrollContainer}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* ── receipt card ────────────────────────────── */}
+        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
           <View style={styles.receiptCard}>
-            {/* ── header ─────────────────────────────────── */}
             <View style={styles.header}>
               <Text style={styles.headerLabel}>Reference No.</Text>
               <Text style={styles.headerValue}>{receipt.referenceNo}</Text>
             </View>
 
-            {/* ── perforated divider ─────────────────────── */}
             <View style={styles.perforatedDivider}>
               <View style={styles.perforationLeft} />
               <View style={styles.dottedLine} />
               <View style={styles.perforationRight} />
             </View>
 
-            {/* ── content area ───────────────────────────── */}
             <View style={styles.content}>
-              
-              {/* ── date / time row ────────────────────────── */}
               <View style={styles.detailRow}>
                 <View style={styles.detailCol}>
                   <Text style={styles.detailLabel}>Date</Text>
-                  <Text style={styles.detailValue}>{receipt.date}</Text>
+                  <Text style={styles.detailValue}>{receipt.date || '—'}</Text>
                 </View>
                 <View style={styles.detailCol}>
                   <Text style={styles.detailLabel}>Time</Text>
-                  <Text style={styles.detailValue}>{receipt.time}</Text>
+                  <Text style={styles.detailValue}>{receipt.time || '—'}</Text>
                 </View>
               </View>
 
-              {/* ── origin / destination row ───────────────── */}
               <View style={styles.detailRow}>
                 <View style={styles.detailCol}>
                   <Text style={styles.detailLabel}>Origin</Text>
-                  <Text style={styles.detailValue}>{receipt.origin}</Text>
+                  <Text style={styles.detailValue}>{receipt.origin || '—'}</Text>
                 </View>
                 <View style={styles.detailCol}>
                   <Text style={styles.detailLabel}>Destination</Text>
-                  <Text style={styles.detailValue}>{receipt.destination}</Text>
+                  <Text style={styles.detailValue}>{receipt.destination || '—'}</Text>
                 </View>
               </View>
 
-              {/* ── passenger type ─────────────────────────── */}
               <View style={styles.detailBlock}>
                 <Text style={styles.detailLabel}>Type of Commuter</Text>
                 <Text style={styles.detailValue}>{receipt.passengerType ?? '—'}</Text>
               </View>
 
-              {/* ── commuter name with icon ────────────────── */}
               <View style={[styles.detailBlock, styles.commuterRow]}>
                 <View style={styles.commuterInfo}>
                   <Text style={styles.detailLabel}>Commuter</Text>
                   <Text style={styles.detailValue}>{receipt.commuter ?? '—'}</Text>
                 </View>
                 <View style={styles.iconContainer}>
-                  <Ionicons
-                    name="person-circle"
-                    size={36}
-                    color="#5a7c65"
-                  />
+                  <Ionicons name="person-circle" size={36} color="#5a7c65" />
                 </View>
               </View>
 
-              {/* ── thin divider ───────────────────────────── */}
               <View style={styles.thinDivider} />
 
-              {/* ── total amount ───────────────────────────── */}
               <View style={styles.totalRow}>
                 <Text style={styles.totalLabel}>Total Amount Sent</Text>
                 <Text style={styles.totalValue}>PHP {receipt.fare}</Text>
               </View>
 
-              {/* ── QR code section ────────────────────────── */}
               <View style={styles.qrSection}>
-                <View style={styles.qrContainer}>
-                  {receipt.qr ? (
-                    <QRCode 
-                      value={receipt.qr} 
-                      size={120}
-                      backgroundColor="white"
-                      color="#2d5016"
-                    />
-                  ) : receipt.qr_url ? (
-                    <Image
-                      source={{ uri: receipt.qr_url }}
-                      style={styles.qrImage}
-                      resizeMode="contain"
-                    />
-                  ) : (
-                    <View style={styles.qrPlaceholder}>
-                      <Ionicons name="qr-code" size={60} color="#a8b5a1" />
-                    </View>
-                  )}
-                </View>
-              </View>
+  <View style={styles.qrContainer}>
+    {(() => {
+      const qrValue = (receipt as any).qr_link ?? receipt.qr ?? "";
+      if (qrValue) {
+        return <QRCode value={qrValue} size={120} backgroundColor="white" color="#2d5016" />;
+      }
+      if (receipt.qr_url) {
+        return <Image source={{ uri: receipt.qr_url }} style={styles.qrImage} resizeMode="contain" />;
+      }
+      return (
+        <View style={styles.qrPlaceholder}>
+          <Ionicons name="qr-code" size={60} color="#a8b5a1" />
+        </View>
+      );
+    })()}
+  </View>
+</View>
+
             </View>
           </View>
         </ScrollView>
@@ -167,7 +202,6 @@ export default function ReceiptDetail() {
     </SafeAreaView>
   );
 }
-
 /* ── styles ───────────────────────────────────────────── */
 const styles = StyleSheet.create({
   safeArea: {

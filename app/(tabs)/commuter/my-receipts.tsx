@@ -1,10 +1,10 @@
-//app/(tabs)/commuter/my-receipts.tsx
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   FlatList,
   Image,
@@ -15,8 +15,11 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import QRCode from 'react-native-qrcode-svg';
 import { API_BASE_URL } from "../../config";
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Types
+// ───────────────────────────────────────────────────────────────────────────────
 
 type Receipt = {
   id: number;
@@ -28,221 +31,315 @@ type Receipt = {
   passengerType: string; // 🔸 "Regular" | "Discount"
   commuter: string;      // 🔸
   fare: string;
-  qr?: string;
-  qr_url?: string;
+  qr?: string;           // full (heavy) JSON/string – detail screen only
+  qr_url?: string;       // lightweight jpg thumbnail – list only
   paid: boolean;
 };
 
 type FilterValue = 'all' | '7' | '30';
 
+type PagedResp = {
+  items: Receipt[];
+  page: number;
+  page_size: number;
+  total: number;
+  has_more: boolean;
+};
+
+// Card height for stable virtualization
+const CARD_HEIGHT = 116;
+
+// Gate dev logs – console logging on device can be slow
+const __DEV_LOG__ = __DEV__ && false;
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Component
+// ───────────────────────────────────────────────────────────────────────────────
 export default function MyReceipts() {
   const router = useRouter();
 
-  /* ── state ── */
-  const [filter, setFilter] = useState<FilterValue>('all');
+  // ── list state ──
+  const [filter, setFilter] = useState<FilterValue>('7'); // default to FAST 7-day
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fadeAnim] = useState(new Animated.Value(0));
 
-  /* ── helpers ── */
-  const fetchReceipts = useCallback(async (f: FilterValue, isRefresh = false) => {
-    if (isRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    setError(null);
-    
-    try {
-      const tok = await AsyncStorage.getItem('@token');
-      console.log('[DEBUG][MyReceipts] Token:', tok);
-      const headers: Record<string, string> = {};
-      if (tok) headers.Authorization = `Bearer ${tok}`;
-      console.log('[DEBUG][MyReceipts] Authorization header:', headers.Authorization);
+  // pagination (backward-compatible: works even if API returns full array)
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
+  const pageSize = 20;
 
-      let url = `${API_BASE_URL}/commuter/tickets/mine`;
-      if (f === '7' || f === '30') {
-        url += `?days=${f}`;
+  // prevent duplicate onEndReached calls
+  const onEndLockRef = useRef(false);
+
+  // NEW: gate the expensive 'All' filter behind an explicit reveal/confirm
+  const [showAllChip, setShowAllChip] = useState(false); // hidden by default
+  const [hasSelectedRange, setHasSelectedRange] = useState(false); // no fetch until user picks
+
+  // ── fetcher ──
+  const fetchReceipts = useCallback(
+    async (f: FilterValue, opts?: { refresh?: boolean; nextPage?: number }) => {
+      const { refresh, nextPage } = opts || {};
+      const targetPage = refresh ? 1 : (nextPage ?? page);
+
+      if (refresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
       }
-      const resp = await fetch(url, { headers });
-      console.log('[DEBUG][MyReceipts] Response status:', resp.status);
-      if (!resp.ok) throw new Error(`Server ${resp.status}`);
-      const json = (await resp.json()) as Receipt[];
-      setReceipts(Array.isArray(json) ? json : []);
-      
-      // Animate content in
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    } catch (e: any) {
-      console.error('Receipts fetch error', e);
-      setError(e.message || 'Unable to load receipts');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [fadeAnim]);
+      setError(null);
+
+      try {
+        const tok = await AsyncStorage.getItem('@token');
+        const headers: Record<string, string> = tok ? { Authorization: `Bearer ${tok}` } : {};
+
+        // Prefer new light+paginated API; backend fallback below
+        let url = `${API_BASE_URL}/commuter/tickets/mine?light=1&page=${targetPage}&page_size=${pageSize}`;
+        if (f === '7' || f === '30') url += `&days=${f}`;
+
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) throw new Error(`Server ${resp.status}`);
+        const json = (await resp.json()) as PagedResp | Receipt[];
+
+        if (Array.isArray(json)) {
+          // ── Fallback: legacy API returns an array (no pagination) ──
+          __DEV_LOG__ && console.log('[MyReceipts] legacy array response, count=', json.length);
+          setReceipts(json);
+          setHasMore(false);
+          setTotalCount(json.length);
+          setPage(1);
+        } else {
+          // ── New API: paginated ──
+          const newItems = json.items ?? [];
+          setReceipts(prev => (targetPage === 1 ? newItems : [...prev, ...newItems]));
+          setHasMore(Boolean(json.has_more));
+          setTotalCount(json.total ?? null);
+          setPage(targetPage);
+        }
+
+        // Animate content in
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+        }).start();
+      } catch (e: any) {
+        console.error('Receipts fetch error', e);
+        setError(e.message || 'Unable to load receipts');
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+        onEndLockRef.current = false;
+      }
+    },
+    [fadeAnim, page]
+  );
+
+  // initial: do NOT fetch until user chooses a range (fast startup)
+  useEffect(() => {
+    if (!hasSelectedRange) return;
+    fadeAnim.setValue(0);
+    setPage(1);
+    setHasMore(true);
+    fetchReceipts(filter, { refresh: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter, hasSelectedRange]);
 
   const onRefresh = useCallback(() => {
-    fetchReceipts(filter, true);
-  }, [filter, fetchReceipts]);
+    if (!hasSelectedRange) return; // no-op until range picked
+    fetchReceipts(filter, { refresh: true });
+  }, [filter, fetchReceipts, hasSelectedRange]);
 
-  /* ── initial + filter change ── */
-  useEffect(() => {
-    fadeAnim.setValue(0);
-    fetchReceipts(filter);
-  }, [filter, fetchReceipts]);
-/* ── render helpers ── */
-const renderReceipt = ({ item, index }: { item: Receipt; index: number }) => {
-  const payload = encodeURIComponent(JSON.stringify(item));
+  const onEndReached = useCallback(() => {
+    if (!hasSelectedRange) return;
+    if (loading || refreshing || !hasMore || onEndLockRef.current) return;
+    onEndLockRef.current = true;
+    fetchReceipts(filter, { nextPage: page + 1 });
+  }, [loading, refreshing, hasMore, page, filter, fetchReceipts, hasSelectedRange]);
 
-  const onPress = () => {
-    router.push({
-      pathname: '/commuter/receipt/[id]',
-      params: {
-        id: item.id.toString(),
-        data: payload,
-      },
-    });
-  };
-
-  return (
-    <TouchableOpacity activeOpacity={0.8} onPress={onPress}>
-      <Animated.View
-        style={[
-          styles.card,
-          {
-            opacity: fadeAnim,
-            transform: [
-              {
-                translateY: fadeAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [20, 0],
-                }),
-              },
-            ],
-          },
-        ]}
-      >
-        {/* Status indicator */}
-        <View
+  // ────────────────────────────────────────────────────────────────────────────
+  // Row (memoized) – shows ONLY qr_url image (no heavy <QRCode /> in list)
+  // ────────────────────────────────────────────────────────────────────────────
+  const ReceiptRow = React.memo(function ReceiptRow({ item, onPress }: { item: Receipt; onPress: () => void }) {
+    return (
+      <TouchableOpacity activeOpacity={0.8} onPress={onPress}>
+        <Animated.View
           style={[
-            styles.statusIndicator,
-            item.paid ? styles.statusPaid : styles.statusUnpaid,
+            styles.card,
+            {
+              opacity: fadeAnim,
+              transform: [
+                {
+                  translateY: fadeAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }),
+                },
+              ],
+            },
           ]}
-        />
+        >
+          {/* Status indicator */}
+          <View style={[styles.statusIndicator, item.paid ? styles.statusPaid : styles.statusUnpaid]} />
 
-        {/* QR column */}
-        <View style={styles.qrWrapper}>
-          <View style={styles.qrContainer}>
-            {item.qr ? (
-              <QRCode value={item.qr} size={64} backgroundColor="transparent" />
-            ) : (
+          {/* QR column */}
+          <View style={styles.qrWrapper}>
+            <View style={styles.qrContainer}>
               <Image source={{ uri: item.qr_url }} style={styles.qrImg} />
-            )}
-          </View>
-        </View>
-
-        {/* details column */}
-        <View style={styles.detailsWrapper}>
-          <View style={styles.headerRow}>
-            <View style={styles.refContainer}>
-              <Text style={styles.refLabel}>Reference No.</Text>
-              <Text style={styles.refValue}>{item.referenceNo}</Text>
-            </View>
-            {item.paid && (
-              <View style={styles.badgePaid}>
-                <Ionicons name="checkmark-circle" size={12} color="#fff" />
-                <Text style={styles.badgePaidText}>Paid</Text>
-              </View>
-            )}
-          </View>
-
-          <View style={styles.infoRow}>
-            <View style={styles.infoItem}>
-              <Ionicons name="calendar-outline" size={14} color="#666" />
-              <View style={styles.infoTextContainer}>
-                <Text style={styles.infoLabel}>Date</Text>
-                <Text style={styles.infoValue}>{item.date}</Text>
-              </View>
-            </View>
-            <View style={styles.infoItem}>
-              <Ionicons name="time-outline" size={14} color="#666" />
-              <View style={styles.infoTextContainer}>
-                <Text style={styles.infoLabel}>Time</Text>
-                <Text style={styles.infoValue}>{item.time}</Text>
-              </View>
             </View>
           </View>
 
-          <View style={styles.fareRow}>
-            <View style={styles.fareContainer}>
-              <Text style={styles.fareLabel}>Total Fare</Text>
-              <Text style={styles.fareValue}>₱{item.fare}</Text>
+          {/* details column */}
+          <View style={styles.detailsWrapper}>
+            <View style={styles.headerRow}>
+              <View style={styles.refContainer}>
+                <Text style={styles.refLabel}>Reference No.</Text>
+                <Text style={styles.refValue}>{item.referenceNo}</Text>
+              </View>
+              {item.paid && (
+                <View style={styles.badgePaid}>
+                  <Ionicons name="checkmark-circle" size={12} color="#fff" />
+                  <Text style={styles.badgePaidText}>Paid</Text>
+                </View>
+              )}
+            </View>
+
+            <View style={styles.infoRow}>
+              <View style={styles.infoItem}>
+                <Ionicons name="calendar-outline" size={14} color="#666" />
+                <View style={styles.infoTextContainer}>
+                  <Text style={styles.infoLabel}>Date</Text>
+                  <Text style={styles.infoValue}>{item.date}</Text>
+                </View>
+              </View>
+              <View style={styles.infoItem}>
+                <Ionicons name="time-outline" size={14} color="#666" />
+                <View style={styles.infoTextContainer}>
+                  <Text style={styles.infoLabel}>Time</Text>
+                  <Text style={styles.infoValue}>{item.time}</Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.fareRow}>
+              <View style={styles.fareContainer}>
+                <Text style={styles.fareLabel}>Total Fare</Text>
+                <Text style={styles.fareValue}>₱{item.fare}</Text>
+              </View>
             </View>
           </View>
-        </View>
-      </Animated.View>
-    </TouchableOpacity>
+        </Animated.View>
+      </TouchableOpacity>
+    );
+  });
+
+  const renderReceipt = useCallback(
+    ({ item }: { item: Receipt }) => {
+      const payload = encodeURIComponent(JSON.stringify(item));
+      const onPress = () =>
+        router.push({ pathname: '/commuter/receipt/[id]', params: { id: String(item.id), data: payload } });
+      return <ReceiptRow item={item} onPress={onPress} />;
+    },
+    [router]
   );
-};
 
-
+  // ────────────────────────────────────────────────────────────────────────────
+  // UI bits
+  // ────────────────────────────────────────────────────────────────────────────
   const FilterButton = ({ label, value, count }: { label: string; value: FilterValue; count?: number }) => (
     <Pressable
-      onPress={() => setFilter(value)}
+      onPress={() => {
+        if (value === 'all') {
+          Alert.alert(
+            'Show all receipts?',
+            'This may take longer to load. Continue?',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Show All', style: 'destructive', onPress: () => {
+                  setFilter('all');
+                  if (!hasSelectedRange) setHasSelectedRange(true);
+                }
+              },
+            ]
+          );
+          return;
+        }
+        setFilter(value);
+        if (!hasSelectedRange) setHasSelectedRange(true);
+      }}
       style={[styles.filterBtn, filter === value && styles.filterBtnActive]}
     >
-      <Text style={[styles.filterText, filter === value && styles.filterTextActive]}>
-        {label}
-      </Text>
-      {count !== undefined && count > 0 && (
+      <Text style={[styles.filterText, filter === value && styles.filterTextActive]}>{label}</Text>
+      {typeof count === 'number' && count > 0 && (
         <View style={[styles.filterBadge, filter === value && styles.filterBadgeActive]}>
-          <Text style={[styles.filterBadgeText, filter === value && styles.filterBadgeTextActive]}>
-            {count}
-          </Text>
+          <Text style={[styles.filterBadgeText, filter === value && styles.filterBadgeTextActive]}>{count}</Text>
         </View>
       )}
     </Pressable>
   );
 
-  const getFilteredCount = (filterValue: FilterValue) => {
-    if (filterValue === 'all') return receipts.length;
-    // This would normally be calculated based on the actual filter logic
-    return receipts.length;
-  };
+  const headerCount = useMemo(() => totalCount ?? receipts.length, [totalCount, receipts.length]);
+
+  // ── initial gate (no data fetched yet) ──
+  const InitialFilterGate = () => (
+    <View style={styles.gateContainer}>
+      <Text style={styles.gateTitle}>Choose a range to view receipts</Text>
+      <Text style={styles.gateSubtitle}>Loading a smaller range opens faster. You can still show everything later.</Text>
+      <View style={styles.gateButtonsRow}>
+        <TouchableOpacity style={[styles.gateBtn, styles.gatePrimary]} onPress={() => { setFilter('7'); setHasSelectedRange(true); }}>
+          <Ionicons name="flash" size={18} color="#fff" />
+          <Text style={styles.gateBtnText}>Last 7 days</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.gateBtn} onPress={() => { setFilter('30'); setHasSelectedRange(true); }}>
+          <Ionicons name="calendar" size={18} color="#2e7d32" />
+          <Text style={styles.gateBtnTextAlt}>Last 30 days</Text>
+        </TouchableOpacity>
+      </View>
+      <TouchableOpacity style={styles.gateAllLink} onPress={() => setShowAllChip(true)}>
+        <Text style={styles.gateAllText}>I need older receipts…</Text>
+      </TouchableOpacity>
+    </View>
+  );
 
   return (
     <View style={styles.container}>
       {/* ── Header ── */}
       <View style={styles.headerContainer}>
         <View style={styles.headerContent}>
-        
           <View style={styles.headerTextContainer}>
             <Text style={styles.headerTitle}>My Receipts</Text>
             <Text style={styles.headerSubtitle}>
-              {receipts.length} {receipts.length === 1 ? 'receipt' : 'receipts'} found
+              {hasSelectedRange ? (
+                <>
+                  {headerCount} {headerCount === 1 ? 'receipt' : 'receipts'} found
+                </>
+              ) : (
+                'Pick a range to load receipts'
+              )}
             </Text>
           </View>
         </View>
         <View style={styles.headerDecoration} />
       </View>
 
-      {/* ── Filter Row ── */}
-      <View style={styles.filterContainer}>
-        <View style={styles.filterRow}>
-          <FilterButton label="All" value="all" count={getFilteredCount('all')} />
-          <FilterButton label="7 Days" value="7" />
-          <FilterButton label="30 Days" value="30" />
+      {/* ── Filter Row (hidden until a range is chosen) ── */}
+      {hasSelectedRange ? (
+        <View style={styles.filterContainer}>
+          <View style={styles.filterRow}>
+            <FilterButton label="7 Days" value="7" />
+            <FilterButton label="30 Days" value="30" />
+            {showAllChip && <FilterButton label="All (slower)" value="all" />}
+          </View>
         </View>
-      </View>
+      ) : (
+        <View style={[styles.filterContainer, { paddingBottom: 0 }]} />
+      )}
 
       {/* ── Content ── */}
-      {loading && !refreshing ? (
+      {!hasSelectedRange ? (
+        <InitialFilterGate />
+      ) : loading && !refreshing ? (
         <View style={styles.centered}>
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#2e7d32" />
@@ -255,10 +352,7 @@ const renderReceipt = ({ item, index }: { item: Receipt; index: number }) => {
             <Ionicons name="alert-circle-outline" size={48} color="#e53e3e" />
             <Text style={styles.errorTitle}>Oops! Something went wrong</Text>
             <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity 
-              style={styles.retryBtn} 
-              onPress={() => fetchReceipts(filter)}
-            >
+            <TouchableOpacity style={styles.retryBtn} onPress={() => fetchReceipts(filter)}>
               <Ionicons name="refresh" size={16} color="#fff" />
               <Text style={styles.retryText}>Try Again</Text>
             </TouchableOpacity>
@@ -270,39 +364,43 @@ const renderReceipt = ({ item, index }: { item: Receipt; index: number }) => {
           keyExtractor={(item) => item.id.toString()}
           renderItem={renderReceipt}
           contentContainerStyle={styles.listContainer}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              colors={['#2e7d32']}
-              tintColor="#2e7d32"
-            />
-          }
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#2e7d32"]} tintColor="#2e7d32" />}
           ListEmptyComponent={() => (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyContent}>
                 <Ionicons name="receipt-outline" size={64} color="#ccc" />
                 <Text style={styles.emptyTitle}>No receipts found</Text>
-                <Text style={styles.emptyText}>
-                  Your transaction receipts will appear here once you make a payment.
-                </Text>
+                <Text style={styles.emptyText}>Your transaction receipts will appear here once you make a payment.</Text>
               </View>
             </View>
           )}
           showsVerticalScrollIndicator={false}
+          // ── Virtualization tuning ──
+          initialNumToRender={8}
+          maxToRenderPerBatch={8}
+          updateCellsBatchingPeriod={16}
+          windowSize={7}
+          removeClippedSubviews
+          getItemLayout={(_, index) => ({ length: CARD_HEIGHT, offset: CARD_HEIGHT * index, index })}
+          // ── Infinite scroll (only if backend paginates) ──
+          onEndReached={onEndReached}
+          onEndReachedThreshold={0.4}
+          ListFooterComponent={hasMore ? <ActivityIndicator style={{ marginVertical: 16 }} /> : null}
         />
       )}
     </View>
   );
 }
 
-/* ─── styles ─── */
+// ───────────────────────────────────────────────────────────────────────────────
+// Styles
+// ───────────────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f5f7fa',
   },
-  
+
   /* header */
   headerContainer: {
     backgroundColor: '#2e7d32',
@@ -403,6 +501,55 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
 
+  /* initial gate */
+  gateContainer: {
+    backgroundColor: '#fff',
+    margin: 20,
+    marginTop: 24,
+    padding: 20,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  gateTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#1e293b',
+  },
+  gateSubtitle: {
+    marginTop: 6,
+    fontSize: 13,
+    color: '#64748b',
+  },
+  gateButtonsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 16,
+  },
+  gateBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  gatePrimary: {
+    backgroundColor: '#2e7d32',
+    borderColor: '#2e7d32',
+  },
+  gateBtnText: { color: '#fff', fontWeight: '800' },
+  gateBtnTextAlt: { color: '#2e7d32', fontWeight: '800' },
+  gateAllLink: { marginTop: 12, alignSelf: 'center' },
+  gateAllText: { color: '#2e7d32', fontWeight: '700' },
+
   /* list */
   listContainer: {
     paddingTop: 16,
@@ -424,24 +571,13 @@ const styles = StyleSheet.create({
     elevation: 4,
     position: 'relative',
     overflow: 'hidden',
+    minHeight: CARD_HEIGHT,
   },
-  statusIndicator: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: 4,
-    height: '100%',
-  },
-  statusPaid: {
-    backgroundColor: '#22c55e',
-  },
-  statusUnpaid: {
-    backgroundColor: '#f59e0b',
-  },
-  qrWrapper: {
-    marginRight: 20,
-    alignItems: 'center',
-  },
+  statusIndicator: { position: 'absolute', top: 0, left: 0, width: 4, height: '100%' },
+  statusPaid: { backgroundColor: '#22c55e' },
+  statusUnpaid: { backgroundColor: '#f59e0b' },
+
+  qrWrapper: { marginRight: 20, alignItems: 'center' },
   qrContainer: {
     width: 80,
     height: 80,
@@ -452,165 +588,38 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0',
   },
-  qrImg: {
-    width: 64,
-    height: 64,
-    borderRadius: 8,
-  },
-  detailsWrapper: {
-    flex: 1,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 16,
-  },
-  refContainer: {
-    flex: 1,
-  },
-  refLabel: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '500',
-    marginBottom: 4,
-  },
-  refValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1e293b',
-  },
-  badgePaid: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#22c55e',
-    borderRadius: 12,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  badgePaidText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '600',
-    marginLeft: 4,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  infoItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    marginRight: 16,
-  },
-  infoTextContainer: {
-    marginLeft: 8,
-  },
-  infoLabel: {
-    fontSize: 11,
-    color: '#64748b',
-    fontWeight: '500',
-  },
-  infoValue: {
-    fontSize: 13,
-    color: '#1e293b',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  fareRow: {
-    borderTopWidth: 1,
-    borderTopColor: '#f1f5f9',
-    paddingTop: 16,
-  },
-  fareContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  fareLabel: {
-    fontSize: 14,
-    color: '#64748b',
-    fontWeight: '500',
-  },
-  fareValue: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#2e7d32',
-  },
+  qrImg: { width: 64, height: 64, borderRadius: 8 },
+
+  detailsWrapper: { flex: 1 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
+  refContainer: { flex: 1 },
+  refLabel: { fontSize: 12, color: '#64748b', fontWeight: '500', marginBottom: 4 },
+  refValue: { fontSize: 16, fontWeight: '700', color: '#1e293b' },
+  badgePaid: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#22c55e', borderRadius: 12, paddingVertical: 4, paddingHorizontal: 8 },
+  badgePaidText: { color: '#fff', fontSize: 11, fontWeight: '600', marginLeft: 4 },
+
+  infoRow: { flexDirection: 'row', marginBottom: 16 },
+  infoItem: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 16 },
+  infoTextContainer: { marginLeft: 8 },
+  infoLabel: { fontSize: 11, color: '#64748b', fontWeight: '500' },
+  infoValue: { fontSize: 13, color: '#1e293b', fontWeight: '600', marginTop: 2 },
+
+  fareRow: { borderTopWidth: 1, borderTopColor: '#f1f5f9', paddingTop: 16 },
+  fareContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  fareLabel: { fontSize: 14, color: '#64748b', fontWeight: '500' },
+  fareValue: { fontSize: 18, fontWeight: '800', color: '#2e7d32' },
 
   /* states */
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 40,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#64748b',
-    fontWeight: '500',
-  },
-  errorContainer: {
-    alignItems: 'center',
-    maxWidth: 280,
-  },
-  errorTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1e293b',
-    marginTop: 16,
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  errorText: {
-    color: '#64748b',
-    fontSize: 14,
-    textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 24,
-  },
-  retryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#2e7d32',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  retryText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-    marginLeft: 8,
-  },
-  emptyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-    paddingHorizontal: 40,
-  },
-  emptyContent: {
-    alignItems: 'center',
-    maxWidth: 280,
-  },
-  emptyTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1e293b',
-    marginTop: 24,
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  emptyText: {
-    fontSize: 14,
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: 20,
-  },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40 },
+  loadingContainer: { alignItems: 'center' },
+  loadingText: { marginTop: 16, fontSize: 16, color: '#64748b', fontWeight: '500' },
+  errorContainer: { alignItems: 'center', maxWidth: 280 },
+  errorTitle: { fontSize: 18, fontWeight: '700', color: '#1e293b', marginTop: 16, marginBottom: 8, textAlign: 'center' },
+  errorText: { color: '#64748b', fontSize: 14, textAlign: 'center', lineHeight: 20, marginBottom: 24 },
+  retryBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#2e7d32', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 },
+  retryText: { color: '#fff', fontSize: 14, fontWeight: '600', marginLeft: 8 },
+  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 80, paddingHorizontal: 40 },
+  emptyContent: { alignItems: 'center', maxWidth: 280 },
+  emptyTitle: { fontSize: 20, fontWeight: '700', color: '#1e293b', marginTop: 24, marginBottom: 12, textAlign: 'center' },
+  emptyText: { fontSize: 14, color: '#64748b', textAlign: 'center', lineHeight: 20 },
 });
