@@ -38,7 +38,10 @@ export default function RouteTimeline() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [fadeAnim] = useState(new Animated.Value(0));
-
+  const friendlyBus = (identifier: string) => {
+    const m = identifier.match(/bus-(\d+)/i);
+    return m ? `Bus ${parseInt(m[1], 10)}` : identifier;
+  };
   // Enhanced error handling
   const showError = (message: string) => {
     Alert.alert('Error', message, [{ text: 'OK' }]);
@@ -133,8 +136,9 @@ export default function RouteTimeline() {
         showError('Authentication token not found');
         return;
       }
-
-      const day = selDate.toISOString().slice(0, 10);
+      const ymdLocal = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const day = ymdLocal(selDate);
 
       // Fetch trips with timeout
       const controller = new AbortController();
@@ -148,6 +152,7 @@ export default function RouteTimeline() {
           signal: controller.signal
         }
       );
+  
       
       clearTimeout(timeoutId);
       
@@ -298,7 +303,11 @@ export default function RouteTimeline() {
             >
               <Picker.Item label="Choose a bus..." value={undefined} />
               {buses.map((b) => (
-                <Picker.Item key={b.id} label={`Bus ${b.identifier}`} value={b.id} />
+                <Picker.Item
+                key={b.id}
+                label={friendlyBus(b.identifier)}  
+                value={b.id}
+              />
               ))}
             </Picker>
           </View>
@@ -343,7 +352,9 @@ export default function RouteTimeline() {
           <View style={styles.statusBar}>
             <View style={styles.statusInfo}>
               <Ionicons name="bus" size={16} color="#2d5a2d" />
-              <Text style={styles.statusText}>Bus {selectedBus.identifier}</Text>
+              <Text style={styles.statusText}>
+  {selectedBus ? friendlyBus(selectedBus.identifier) : ''}
+</Text>
             </View>
             <View style={styles.statusInfo}>
               <Ionicons name="calendar" size={16} color="#2d5a2d" />

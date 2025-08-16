@@ -1,10 +1,11 @@
 // app/signup.tsx
-import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -17,7 +18,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import LegalModal from '../components/LegalModal';
+import { API_BASE_URL } from './config';
 
+const APP_LOGO = require('../assets/images/logos.png');
 export default function SignUpScreen() {
   const [firstName,       setFirstName]       = useState('');
   const [lastName,        setLastName]        = useState('');
@@ -28,7 +32,8 @@ export default function SignUpScreen() {
   const [agreed,          setAgreed]          = useState(false);
   const [showPassword,    setShowPassword]    = useState(false);
   const [showConfPass,    setShowConfPass]    = useState(false);
-
+  const [legalOpen, setLegalOpen] = useState(false);
+  const [legalType, setLegalType] = useState<'tos' | 'privacy'>('tos');
   const router = useRouter();
 
   // header animations
@@ -54,8 +59,17 @@ export default function SignUpScreen() {
 
   const handleSignUp = async () => {
     if (!agreed) return;
+    if (password.trim() === '' || confirmPassword.trim() === '') {
+      alert('Please enter and confirm your password.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      alert('Passwords do not match.');
+      return;
+    }
+  
     try {
-      const res = await fetch('${API_BASE_URL}/api/auth/signup', {
+      const res = await fetch(`${API_BASE_URL}/api/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ firstName, lastName, username, phoneNumber, password }),
@@ -110,9 +124,14 @@ export default function SignUpScreen() {
         <Animated.View style={[styles.headerContent, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
           <View style={styles.logoContainer}>
             <View style={styles.logoCircle}>
-              <MaterialIcons name="directions-bus" size={32} color="#4CAF50" />
+            <Image
+     source={APP_LOGO}
+     style={styles.logoImg}
+     resizeMode="contain"
+     accessibilityLabel="PGT TRANSECO logo"
+   />
             </View>
-            <Text style={styles.appName}>PGT Onboard</Text>
+       
           </View>
           <Text style={styles.subtitle}>Join the community!</Text>
           <Text style={styles.title}>Create Account</Text>
@@ -227,17 +246,39 @@ export default function SignUpScreen() {
             </View>
           ))}
 
-          {/* Terms checkbox */}
-          <Pressable style={styles.checkWrap} onPress={() => setAgreed(!agreed)}>
-            <View style={[styles.checkbox, agreed && styles.checkboxOn]}>
-              {agreed && <Ionicons name="checkmark" size={14} color="#fff" />}
-            </View>
-            <Text style={styles.checkLabel}>
-              I agree to the{' '}
-              <Text style={styles.link}>Terms of Service</Text> and{' '}
-              <Text style={styles.link}>Privacy Policy</Text>
-            </Text>
-          </Pressable>
+<Pressable style={styles.checkWrap} onPress={() => setAgreed(!agreed)}>
+  <View style={[styles.checkbox, agreed && styles.checkboxOn]}>
+    {agreed && <Ionicons name="checkmark" size={14} color="#fff" />}
+  </View>
+  <Text style={styles.checkLabel}>
+    I agree to the{' '}
+    <Text
+      style={styles.link}
+      onPress={(e) => {
+        e.stopPropagation();
+        setLegalType('tos');
+        setLegalOpen(true);
+      }}
+    >
+      Terms of Service
+    </Text>{' '}
+    and{' '}
+    <Text
+      style={styles.link}
+      onPress={(e) => {
+        e.stopPropagation();
+        setLegalType('privacy');
+        setLegalOpen(true);
+      }}
+    >
+      Privacy Policy
+    </Text>
+  </Text>
+</Pressable>
+
+<LegalModal visible={legalOpen} type={legalType} onClose={() => setLegalOpen(false)} />
+
+
 
           {/* Create Account */}
           <TouchableOpacity
@@ -349,4 +390,8 @@ const styles = StyleSheet.create({
     color:      '#4A7C59',
     fontWeight: '600',
   },
+  logoImg: {
+       width: 44,
+       height: 44,
+     },
 });

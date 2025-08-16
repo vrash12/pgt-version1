@@ -1,7 +1,8 @@
-// TWEAK IN app.json: set "expo.android.softwareKeyboardLayoutMode": "resize"
+//app(tabs)/pao/announcement.tsx
 
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -17,7 +18,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'; // TWEAK: use SafeAreaView from safe-area-context
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_BASE_URL } from '../../config';
 
 type Ann = {
@@ -33,21 +34,29 @@ type Ann = {
 export default function AnnouncementScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const tabBarH = useBottomTabBarHeight();
 
-  // TWEAK IF YOUR TAB HEIGHT CHANGES
-  const TAB_BAR_H = 66 + insets.bottom;
-  const COMPOSER_H = 64;
+
+  const TAB_BAR_H = Math.max(0, tabBarH - 6); 
 
   const flatRef = useRef<FlatList<Ann & { _showDate?: boolean }>>(null);
-
+  const [composerH, setComposerH] = useState(0);
   const [loading, setLoading] = useState(true);
   const [anns, setAnns] = useState<Ann[]>([]);
   const [draft, setDraft] = useState('');
-  const [kbVisible, setKbVisible] = useState(false);
-
+    const [kbVisible, setKbVisible] = useState(false);
+    const [kbHeight, setKbHeight] = useState(0);
   useEffect(() => {
-    const sh = Keyboard.addListener('keyboardDidShow', () => setKbVisible(true));
-    const hd = Keyboard.addListener('keyboardDidHide', () => setKbVisible(false));
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+        const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+        const sh = Keyboard.addListener(showEvt, (e) => {
+          setKbVisible(true);
+          setKbHeight(e?.endCoordinates?.height ?? 0);
+        });
+        const hd = Keyboard.addListener(hideEvt, () => {
+          setKbVisible(false);
+          setKbHeight(0);
+        });
     return () => {
       sh.remove();
       hd.remove();
@@ -58,7 +67,7 @@ export default function AnnouncementScreen() {
     (async () => {
       try {
         const token = await AsyncStorage.getItem('@token');
-        const res = await fetch(`${API_BASE_URL}/pao/broadcast`, {
+        const res = await fetch(`${API_BASE_URL}/pao/broadcast?scope=all`, {
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         });
         if (res.ok) {
@@ -72,6 +81,7 @@ export default function AnnouncementScreen() {
       }
     })();
   }, []);
+  
 
   const handleSend = async () => {
     const trimmed = draft.trim();
@@ -118,7 +128,7 @@ export default function AnnouncementScreen() {
   }
 
   return (
-    <SafeAreaView edges={['top', 'left', 'right']} style={styles.container}>
+    <SafeAreaView edges={['top','left','right']} style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#fff" />
 
       <View style={styles.header}>
@@ -132,20 +142,20 @@ export default function AnnouncementScreen() {
       </View>
 
       <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined} // TWEAK: no behavior on Android
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : undefined}
-      >
+  style={{ flex: 1 }}
+  behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+  keyboardVerticalOffset={0}
+>
         <FlatList
           ref={flatRef}
           data={dataWithHeaders as any}
           keyExtractor={item => String(item.id)}
           inverted
           keyboardShouldPersistTaps="handled"
-          style={{ flex: 1 }}
           contentContainerStyle={{
             paddingHorizontal: 16,
-            paddingTop: COMPOSER_H + 12, // TWEAK IF YOU CHANGE COMPOSER_H
+            // reserve space for the composer exactly
+            paddingTop: composerH + 96,
             paddingBottom: 16,
             backgroundColor: '#fff',
           }}
@@ -176,18 +186,19 @@ export default function AnnouncementScreen() {
           )}
         />
 
-        <View
-          pointerEvents="box-none"
-          style={[
-            styles.composerWrap,
-            {
-              bottom: kbVisible ? 0 : TAB_BAR_H, // TWEAK IF YOUR TAB HEIGHT CHANGES
-              paddingBottom: kbVisible ? 0 : insets.bottom,
-            },
-          ]}
-        >
+<View
+  pointerEvents="box-none"
+  style={[
+    styles.composerWrap,
+    {
+      // Pin above tab bar or keyboard
+      bottom: kbVisible ? kbHeight : TAB_BAR_H,
+    },
+  ]}
+>
           <View style={styles.composerShadow}>
-            <View style={styles.composer}>
+            <View style={styles.composer}
+            onLayout={e => setComposerH(e.nativeEvent.layout.height)}>
               <TextInput
                 style={styles.textInput}
                 placeholder="Share an announcement..."
@@ -270,10 +281,12 @@ const styles = StyleSheet.create({
   messageText: { fontSize: 15, color: '#333', lineHeight: 22 },
 
   composerWrap: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-  },
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        zIndex: 100,      // ensure it sits above the list
+        elevation: 6,     // Android visual stacking
+      },
   composerShadow: {
     backgroundColor: '#fff',
     paddingHorizontal: 16,

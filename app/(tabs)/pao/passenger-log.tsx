@@ -7,18 +7,11 @@ import { useRouter } from 'expo-router';
 import mqtt, { MqttClient } from 'mqtt';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Animated,
-  Dimensions,
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+  ActivityIndicator, Animated, Dimensions, Platform,
+  ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useBadge } from './badge-ctx';
 //router
 
@@ -37,7 +30,7 @@ ExpoNotify.setNotificationHandler({
 /* ───────── CONFIG ───────── */
 const MQTT_URL = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
 const MQTT_USER = 'vanrodolf';
-const router = useRouter();
+
 const MQTT_PASS = 'Vanrodolf123.';
 
 // Enhanced green theme colors
@@ -57,7 +50,9 @@ const COLORS = {
   shadow: 'rgba(27, 94, 32, 0.15)',
 };
 
-const { width } = Dimensions.get('window');
+const { width, height: SCREEN_H } = Dimensions.get('window');
+const MAP_HEIGHT = Math.min(420, SCREEN_H * 0.6); // ~60% of screen, capped
+
 
 /* helpers that include busId */
 const tBusTelem = (b?: string) =>
@@ -83,6 +78,29 @@ const AnimatedCard = ({ children, style, delay = 0 }: any) => {
   const slideAnim = useRef(new Animated.Value(30)).current;
 
   const router = useRouter();
+
+  useEffect(() => {
+    (async () => {
+      // Ask for permission if needed
+      const perms = await Notifications.getPermissionsAsync();
+      if (perms.status !== 'granted') {
+        await Notifications.requestPermissionsAsync();
+      }
+  
+      // ANDROID: channel controls sound + vibration
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('pao-alerts', {
+          name: 'PAO Alerts',
+          importance: Notifications.AndroidImportance.HIGH,
+          sound: 'default',            // 🔊 system beep
+          enableVibrate: true,         // 📳
+          vibrationPattern: [0, 250, 250, 500],
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        });
+      }
+    })();
+  }, []);
+  
   useEffect(() => {
     const sub = Notifications.addNotificationResponseReceivedListener(resp => {
       const commuterId = resp.notification.request.content.data.commuterId;
@@ -153,6 +171,25 @@ const PulsingDot = ({ size = 12, color = COLORS.accent }: any) => {
       }}
     />
   );
+};
+
+const lastBeep: Record<string, number> = {};
+
+const fireLocalBeep = async (commuterId: string, minutes?: number) => {
+  const now = Date.now();
+  const last = lastBeep[commuterId] ?? 0;
+  if (now - last < 10_000) return; // throttle
+  lastBeep[commuterId] = now;
+
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: '🚏 Pickup Request',
+      body: `Commuter #${commuterId.padStart(2, '0')} is waiting${minutes ? ` (${minutes} min)` : ''}.`,
+      sound: 'default',
+      data: { commuterId },
+    },
+    trigger: null,
+  });
 };
 
 const EnhancedStat = ({ label, value, danger, icon }: any) => {
@@ -263,7 +300,7 @@ export default function PassengerLogScreen() {
   const mapRef = useRef<MapView>(null);
   const mqttRef = useRef<MqttClient | null>(null);
   const tabSlideAnim = useRef(new Animated.Value(0)).current;
-
+  const router = useRouter();
   /* assigned busId comes from auth / AsyncStorage */
   const [busId, setBusId] = useState<string | null>(null);
 
@@ -274,6 +311,7 @@ export default function PassengerLogScreen() {
   const [passengers, setPassengers] = useState<Passenger[]>([]);
   const [requests, setRequests] = useState<RequestItem[]>([]);
   const [selReq, setSelReq] = useState<RequestItem | null>(null);
+  const [fullMap, setFullMap] = useState(false);
 
   const toTopicId = (raw: string) => {
     if (raw.startsWith('bus-')) return raw; // already correct
@@ -410,28 +448,30 @@ export default function PassengerLogScreen() {
           
         } else if (msg.type === 'request') {
           const t = msg.timestamp ? new Date(msg.timestamp) : new Date();
-          const newRequest = { id: String(msg.id), time: t, status: 'Waiting' as const };
-  
+          const commuterId = String(msg.id);
+          const newRequest: RequestItem = { id: commuterId, time: t, status: 'Waiting' };
+        
           setRequests(prev => {
-     
-               const idx = prev.findIndex(r => r.id === newRequest.id);
-            
-               // (1) same commuter & still waiting  → keep row as-is
-               if (idx !== -1 && prev[idx].status !== 'Acknowledged') {
-                 return prev;
-               }
-            
-               // (2) same commuter but was acknowledged → replace with fresh “Waiting”
-               if (idx !== -1) {
-                 const next = [...prev];
-                 next[idx] = { ...prev[idx], time: t, status: 'Waiting' };
-                 return next;
-               }
-            
-               // (3) brand-new commuter
-               return [...prev, newRequest];
-            });
-
+            const idx = prev.findIndex(r => r.id === commuterId);
+        
+            // (1) brand-new commuter → add + beep
+            if (idx === -1) {
+              fireLocalBeep(commuterId, msg.minutes);
+              return [...prev, newRequest];
+            }
+        
+            // (2) existed but was acknowledged → flip back to Waiting + beep once
+            if (prev[idx].status === 'Acknowledged') {
+              const next = [...prev];
+              next[idx] = { ...prev[idx], time: t, status: 'Waiting' };
+              fireLocalBeep(commuterId, msg.minutes);
+              return next;
+            }
+        
+            // (3) already "Waiting" → don't spam
+            return prev;
+          });
+        
           } else if (msg.type === 'location-stop') {
                   // commuter stopped live sharing; clean up UI
                   const pid = String(msg.id);
@@ -479,9 +519,7 @@ return (
 
     {/* ENHANCED HEADER */}
     <View style={styles.header}>
-      <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={COLORS.white} />
-      </TouchableOpacity>
+ 
       <View style={styles.headerContent}>
         <Text style={styles.headerTitle}>Bus {busId?.replace('bus-', '').toUpperCase()}</Text>
         <Text style={styles.headerSubtitle}>Passenger Monitoring</Text>
@@ -516,28 +554,39 @@ return (
 
     {/* --- CONDITIONAL CONTENT BASED ON TAB --- */}
     {tab === 'location' ? (
-      <View style={{ flex: 1 }}> 
-        <AnimatedCard style={styles.mapCard} delay={200}>
-          <MapView
-            ref={mapRef}
-            style={styles.map}
-            provider={PROVIDER_GOOGLE}
-            initialRegion={{ ...busLoc, latitudeDelta: 0.05, longitudeDelta: 0.05 }}
-          >
-            <Marker coordinate={busLoc}>
-              <View style={styles.busMarker}>
-                <MaterialCommunityIcons name="bus" size={24} color={COLORS.white} />
-              </View>
-            </Marker>
-            {passengers.map(p => (
-              <Marker key={p.id} coordinate={p.location}>
-                <View style={styles.passengerMarker}>
-                  <PulsingDot size={12} color={COLORS.accent} />
-                </View>
-              </Marker>
-            ))}
-          </MapView>
-        </AnimatedCard>
+   <ScrollView
+     style={{ flex: 1 }}
+     contentContainerStyle={styles.locationScroll}
+     showsVerticalScrollIndicator={false}
+   >
+   <AnimatedCard style={[styles.mapCard, { height: MAP_HEIGHT }]} delay={200}>
+  <View style={{ flex: 1 }}>
+    <MapView
+      ref={mapRef}
+      style={StyleSheet.absoluteFill}
+      provider={PROVIDER_GOOGLE}
+      initialRegion={{ ...busLoc, latitudeDelta: 0.05, longitudeDelta: 0.05 }}
+    >
+      <Marker coordinate={busLoc}>
+        <View style={styles.busMarker}>
+          <MaterialCommunityIcons name="bus" size={24} color={COLORS.white} />
+        </View>
+      </Marker>
+      {passengers.map(p => (
+        <Marker key={p.id} coordinate={p.location}>
+          <View style={styles.passengerMarker}>
+            <PulsingDot size={12} color={COLORS.accent} />
+          </View>
+        </Marker>
+      ))}
+    </MapView>
+
+    {/* overlayed, not a child of MapView */}
+    <TouchableOpacity style={styles.mapFab} onPress={() => setFullMap(true)}>
+      <MaterialCommunityIcons name="arrow-expand" size={20} color="#fff" />
+    </TouchableOpacity>
+  </View>
+</AnimatedCard>
 
         <AnimatedCard style={styles.statsCard} delay={300}>
           <EnhancedStat label="Waiting Passengers" value={passengers.length} icon="people" />
@@ -551,7 +600,7 @@ return (
             danger={requests.some(r => r.status === 'Waiting')}
           />
         </AnimatedCard>
-      </View>
+        </ScrollView>
     ) : (
 <View style={{ flex: 1 }}>
         {/* INFO TAB CONTENT */}
@@ -615,6 +664,44 @@ return (
         </View>
         </View>
     )}
+    {fullMap && (
+  <View style={styles.fullscreenWrap}>
+    <MapView
+      ref={mapRef}
+      style={StyleSheet.absoluteFill}
+      provider={PROVIDER_GOOGLE}
+      initialRegion={{ ...busLoc!, latitudeDelta: 0.02, longitudeDelta: 0.02 }}
+    >
+      <Marker coordinate={busLoc!}>
+        <View style={styles.busMarker}>
+          <MaterialCommunityIcons name="bus" size={24} color="#fff" />
+        </View>
+      </Marker>
+
+      {passengers.map(p => (
+        <Marker key={p.id} coordinate={p.location}>
+          <View style={styles.passengerMarker}>
+            <PulsingDot size={12} color={COLORS.accent} />
+          </View>
+        </Marker>
+      ))}
+    </MapView>
+
+    {/* top bar */}
+    <View style={styles.fullscreenTopBar}>
+      <TouchableOpacity style={styles.fullscreenBtn} onPress={() => setFullMap(false)}>
+        <MaterialCommunityIcons name="arrow-collapse" size={22} color="#1B5E20" />
+        <Text style={styles.fullscreenTxt}>Close map</Text>
+      </TouchableOpacity>
+
+      <View style={styles.fullscreenPill}>
+        <MaterialCommunityIcons name="account-group" size={16} color="#1B5E20" />
+        <Text style={styles.fullscreenPillTxt}>{occupied}</Text>
+      </View>
+    </View>
+  </View>
+)}
+
   </SafeAreaView>
 );
 }
@@ -622,6 +709,9 @@ return (
 
 /* ───────── Enhanced Styles ───────── */
 const styles = StyleSheet.create({
+  locationScroll: {
+        paddingBottom: 140, // leaves room on small screens so stats aren’t clipped
+      },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -728,7 +818,65 @@ emptyContainer: {
     justifyContent: 'center',
     alignItems: 'center',
   },
-
+  mapFab: {
+    position: 'absolute',
+    right: 12,
+    top: 12,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 16,
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  
+  fullscreenWrap: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: '#000',
+    zIndex: 999,                 // above the acknowledge bar
+  },
+  
+  fullscreenTopBar: {
+    position: 'absolute',
+    top: 40,
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  
+  fullscreenBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E8F5E8',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    gap: 8,
+  },
+  
+  fullscreenTxt: {
+    color: '#1B5E20',
+    fontWeight: '700',
+  },
+  
+  fullscreenPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E8F5E8',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    gap: 6,
+  },
+  
+  fullscreenPillTxt: {
+    color: '#1B5E20',
+    fontWeight: '800',
+  },
+  
   // Enhanced tabs
   tabContainer: {
     margin: 20,
@@ -868,7 +1016,7 @@ emptyContainer: {
   // Info/Requests
   infoScrollContainer: {
     padding: 20,
-    paddingBottom: 100,
+    paddingBottom: 180,
   },
   requestCard: {
     backgroundColor: COLORS.white,

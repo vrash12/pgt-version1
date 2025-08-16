@@ -1,3 +1,4 @@
+//app/(tabs)/manager/bus-status.tsx
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import dayjs from 'dayjs';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -5,6 +6,8 @@ import { useRouter } from 'expo-router';
 import mqtt, { MqttClient } from 'mqtt';
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Dimensions,
+  Modal,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -22,11 +25,12 @@ import { API_BASE_URL } from "../../config";
    const MQTT_BROKER_URL  = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
    const MQTT_USERNAME    = 'vanrodolf';
    const MQTT_PASSWORD    = 'Vanrodolf123.';
-   
+   const { height: SCREEN_H } = Dimensions.get('window');
+   const MAP_HEIGHT = Math.min(180, SCREEN_H * 0.60); // ~60% of screen, capped
    const TOPIC_TELEMETRY  = 'device/+/telemetry';
    const TOPIC_PEOPLE     = 'device/+/people';
    const TOPIC_FARE       = 'device/+/fare';
-   
+   const OFFLINE_GRACE_MS = 20_000;
    const CACHE_KEY_STATUS = 'lastBusStatus';
    const CACHE_KEY_SENSOR = 'lastSensorData';
    
@@ -57,7 +61,8 @@ import { API_BASE_URL } from "../../config";
      const router   = useRouter();
      const mapRef   = useRef<MapView | null>(null); 
      const mqttRef  = useRef<MqttClient | null>(null);
-   
+     const lastSeenRef = useRef<Record<DeviceId, number>>({} as any);
+
      /* layout helpers */
      const insets         = useSafeAreaInsets();
      const TAB_BAR_HEIGHT = (Platform.OS === 'ios' ? 72 : 64) + insets.bottom;
@@ -69,13 +74,40 @@ import { API_BASE_URL } from "../../config";
      const [sensors, setSensors]       = useState<Record<DeviceId, SensorData>>({} as any);
      const [counting, setCounting]     = useState<'0' | '1' | null>(null);
      const [selectedId, setSelectedId] = useState<'all' | DeviceId>('all');
-   
+     const [fullMap, setFullMap] = useState(false);
      /* convenience */
      const activeStatus = selectedId !== 'all' ? statuses[selectedId] : undefined;
      const activeSensor = selectedId !== 'all' ? sensors[selectedId]  : undefined;
-     const visible      = selectedId === 'all'
-       ? Object.values(statuses)
-       : activeStatus ? [activeStatus] : [];
+
+// force periodic re-evaluation of freshness even if no new MQTT messages arrive
+const [heartbeat, setHeartbeat] = React.useState(0);
+React.useEffect(() => {
+  const iv = setInterval(() => setHeartbeat(h => (h + 1) % 1_000_000), 1000); // 1s
+  return () => clearInterval(iv);
+}, []);
+
+       // 1) helper (inside BusStatusScreen, before you compute `visible`)
+const isFresh = React.useCallback(
+  (id: DeviceId, now = Date.now()) =>
+    now - (lastSeenRef.current[id] ?? 0) <= OFFLINE_GRACE_MS,
+  []
+);
+
+
+const freshList = React.useMemo(() => {
+  const now = Date.now();
+  return (Object.values(statuses) as BusStatus[]).filter(bs =>
+    isFresh(bs.id as DeviceId, now)
+  );
+}, [statuses, isFresh, heartbeat]); // 👈 add heartbeat
+
+
+
+const visible = React.useMemo(() => {
+  if (selectedId === 'all') return freshList;
+  const one = freshList.find(b => b.id === selectedId);
+  return one ? [one] : [];
+}, [freshList, selectedId]);
    
      /* ── init: token + cached data ────────────────────────────────── */
      useEffect(() => { AsyncStorage.getItem('@token').then(setToken); }, []);
@@ -91,6 +123,11 @@ import { API_BASE_URL } from "../../config";
          }
          setStatuses(s);
          setSensors(se);
+         
+         // ⬇️ mark hydrated entries as stale; prune will remove them if no fresh data
+         Object.keys(s).forEach(id => {
+           lastSeenRef.current[id as DeviceId] = 0;
+         });
        })();
      }, []);
    
@@ -102,75 +139,129 @@ import { API_BASE_URL } from "../../config";
          AsyncStorage.mergeItem(`${CACHE_KEY_STATUS}:${deviceId}`, JSON.stringify({ paid }));
          return merged;
        });
-   
-     /* ── MQTT live feed ───────────────────────────────────────────── */
-     useEffect(() => {
-       if (!token) return;
-   
-       /* keep UI flag in sync */
-       const poll = setInterval(async () =>
-         setCounting(await AsyncStorage.getItem('@countingActive') as '0' | '1' | null)
-       , 2000);
-   
-       /* connect */
-       const client = mqtt.connect(MQTT_BROKER_URL, {
-         username: MQTT_USERNAME,
-         password: MQTT_PASSWORD,
-         protocol: 'wss',
-         keepalive: 30,
-         reconnectPeriod: 2000,
-       });
-       mqttRef.current = client;
-   
-       client.on('connect', () => {
-         setMqttState('connected');
-         client.subscribe([TOPIC_TELEMETRY, TOPIC_PEOPLE, TOPIC_FARE], { qos: 1 });
-       });
-       client.on('error', () => { setMqttState('error'); client.end(); });
-   
-       client.on('message', async (topic, raw) => {
-         const [, deviceId, channel] = topic.split('/');
-         if (!isDeviceId(deviceId)) return;
-         const msg = JSON.parse(raw.toString());
-   
-         if (channel === 'telemetry') {
-           const { lat, lng, people, paid = 0 } = msg;
-           setStatuses(prev => {
-             const next = { ...prev,
-               [deviceId]: { id: deviceId, lat, lng, passengers: people, paid }
-             };
-             AsyncStorage.setItem(`${CACHE_KEY_STATUS}:${deviceId}`,
-               JSON.stringify({ lat, lng, people, paid }));
-             return next;
-           });
-         }
-   
-         if (channel === 'people') {
-           const se: SensorData = {
-             id: deviceId,
-             in: +msg.in || 0,
-             out: +msg.out || 0,
-             total: +msg.total || 0,
-           };
-           setSensors(prev => {
-             const next = { ...prev, [deviceId]: se };
-             AsyncStorage.setItem(`${CACHE_KEY_SENSOR}:${deviceId}`, JSON.stringify(se));
-             return next;
-           });
-           if (counting === '1') {
-             fetch(`${API_BASE_URL}/manager/sensor-readings`, {
-               method: 'POST',
-               headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-               body: JSON.stringify({ deviceId, ...se }),
-             }).catch(() => {});
-           }
-         }
-   
-         if (channel === 'fare') mergePaidCount(deviceId, Number(msg.paid) || 0);
-       });
-   
-       return () => { clearInterval(poll); client.end(true); };
-     }, [token, counting]);
+// keep selected bus in a ref so the MQTT effect doesn't depend on it
+const selectedRef = React.useRef<'all' | DeviceId>('all');
+useEffect(() => { selectedRef.current = selectedId; }, [selectedId]);
+
+useEffect(() => {
+  if (!token) return;
+
+  setMqttState('connecting');
+
+  // poll counting flag
+  const poll = setInterval(async () => {
+    setCounting((await AsyncStorage.getItem('@countingActive')) as '0' | '1' | null);
+  }, 2000);
+
+  // stable MQTT connection with auto-reconnect
+  const client = mqtt.connect(MQTT_BROKER_URL, {
+    username: MQTT_USERNAME,
+    password: MQTT_PASSWORD,
+    protocol: 'wss',
+    keepalive: 30,
+    clean: true,
+    reconnectPeriod: 3000,
+    connectTimeout: 10_000,
+    clientId: `manager-${Math.random().toString(16).slice(2)}`,
+  });
+  mqttRef.current = client;
+
+  const subscribeAll = () => {
+    client.subscribe([TOPIC_TELEMETRY, TOPIC_PEOPLE, TOPIC_FARE], { qos: 1 });
+  };
+
+  client.on('connect', () => {
+    setMqttState('connected');
+    subscribeAll(); // runs on initial connect and after reconnect
+  });
+  client.on('reconnect', () => setMqttState('connecting'));
+  client.on('close',     () => setMqttState('connecting'));
+  client.on('offline',   () => setMqttState('connecting'));
+  client.on('error', (err) => {
+    console.warn('[mqtt] error:', err?.message);
+    // DO NOT end() here; let mqtt.js auto-reconnect
+  });
+
+  client.on('message', (topic, raw) => {
+    const [, deviceId, channel] = topic.split('/');
+    if (!isDeviceId(deviceId)) return;
+
+    const msg = JSON.parse(raw.toString());
+    // mark last-seen for offline pruning
+    lastSeenRef.current[deviceId] = Date.now();
+
+    if (channel === 'telemetry') {
+      const { lat, lng, people, paid = 0 } = msg;
+      setStatuses(prev => {
+        const next = { ...prev, [deviceId]: { id: deviceId, lat, lng, passengers: people, paid } };
+        AsyncStorage.setItem(`${CACHE_KEY_STATUS}:${deviceId}`, JSON.stringify({ lat, lng, people, paid }));
+        return next;
+      });
+      return;
+    }
+
+    if (channel === 'people') {
+      const se: SensorData = {
+        id: deviceId,
+        in: +msg.in || 0,
+        out: +msg.out || 0,
+        total: +msg.total || 0,
+      };
+      setSensors(prev => {
+        const next = { ...prev, [deviceId]: se };
+        AsyncStorage.setItem(`${CACHE_KEY_SENSOR}:${deviceId}`, JSON.stringify(se));
+        return next;
+      });
+      if (counting === '1') {
+        fetch(`${API_BASE_URL}/manager/sensor-readings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ deviceId, ...se }),
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    if (channel === 'fare') {
+      mergePaidCount(deviceId, Number(msg.paid) || 0);
+    }
+  });
+
+  // prune offline devices inside this effect
+  const prune = setInterval(() => {
+    const now = Date.now();
+    const staleIds = (Object.keys(lastSeenRef.current) as DeviceId[]).filter(
+      id => now - (lastSeenRef.current[id] ?? 0) > OFFLINE_GRACE_MS
+    );
+    if (!staleIds.length) return;
+
+    setStatuses(prev => {
+      const next = { ...prev };
+      staleIds.forEach(id => delete next[id]);
+      return next;
+    });
+    setSensors(prev => {
+      const next = { ...prev };
+      staleIds.forEach(id => delete next[id]);
+      return next;
+    });
+
+    // if currently viewing a bus that went offline, jump back to "all"
+    if (staleIds.includes(selectedRef.current as DeviceId)) {
+      setSelectedId('all');
+    }
+
+    staleIds.forEach(id => { delete lastSeenRef.current[id]; });
+  }, 5000);
+
+  return () => {
+    clearInterval(poll);
+    clearInterval(prune);
+    client.end(true);
+  };
+}, [token, counting]); // note: no selectedId here
+
+    
    
      /* ── backend poll every 15 s to reconcile paid counters ───────── */
      useEffect(() => {
@@ -224,10 +315,11 @@ const run = async () => {
        }
      }, [selectedId, activeStatus]);
    
-     /* fleet totals */
-     const activeBuses     = Object.keys(statuses).length;
-     const totalPassengers = Object.values(statuses).reduce((s, b) => s + b.passengers, 0);
-     const totalPaid       = Object.values(statuses).reduce((s, b) => s + b.paid, 0);
+   // 3) totals should use only fresh buses
+   const activeBuses     = freshList.length;
+   const totalPassengers = freshList.reduce((s, b) => s + (b.passengers || 0), 0);
+   const totalPaid       = freshList.reduce((s, b) => s + (b.paid || 0), 0);
+   
    
      /* UI helpers */
      const mqttColor = mqttState === 'connected' ? '#10B981'
@@ -263,25 +355,7 @@ const run = async () => {
                </View>
              </View>
    
-             <View style={[styles.statusCard, styles.countingCard]}>
-               <View style={styles.statusCardHeader}>
-                 <View style={[
-                   styles.statusIcon,
-                   { backgroundColor: counting === '1' ? '#10B981' : '#EF4444' }
-                 ]}>
-                   <Text style={styles.statusIconText}>{counting === '1' ? '▶' : '⏸'}</Text>
-                 </View>
-                 <View>
-                   <Text style={styles.statusCardTitle}>Counting</Text>
-                   <Text style={[
-                     styles.statusCardValue,
-                     { color: counting === '1' ? '#10B981' : '#EF4444' }
-                   ]}>
-                     {counting === '1' ? 'Active' : 'Paused'}
-                   </Text>
-                 </View>
-               </View>
-             </View>
+      
            </View>
    
            {/* overview */}
@@ -296,6 +370,7 @@ const run = async () => {
              selectedId={selectedId}
              setSelectedId={setSelectedId}
              statuses={statuses}
+             isFresh={isFresh}  
            />
    
            {/* scroll area */}
@@ -308,6 +383,7 @@ const run = async () => {
                buses={visible}
                selectedId={selectedId}
                setSelectedId={setSelectedId}
+               setFullMap={setFullMap} 
              />
    
              <StatsSection
@@ -317,7 +393,50 @@ const run = async () => {
                statuses={statuses}
                sensors={sensors}
                setSelectedId={setSelectedId}  
+               isFresh={isFresh}    
              />
+       <Modal
+  visible={fullMap}
+  animationType="fade"
+  onRequestClose={() => setFullMap(false)}
+>
+  <View style={{ flex: 1, backgroundColor: '#000' }}>
+    <MapView
+      ref={mapRef}
+      style={StyleSheet.absoluteFillObject}
+      initialRegion={{
+        latitude: 15.67,
+        longitude: 120.63,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      }}
+    >
+      {visible
+        .filter(bs => Number.isFinite(bs.lat) && Number.isFinite(bs.lng))
+        .map(bs => (
+          <Marker
+            key={bs.id}
+            pinColor={bs.id === selectedId ? '#10B981' : '#059669'}
+            coordinate={{ latitude: bs.lat, longitude: bs.lng }}
+            title={bs.id.toUpperCase()}
+            description={`${bs.passengers} passengers • ${bs.paid} paid`}
+          />
+        ))}
+    </MapView>
+
+    {/* top controls */}
+    <View style={styles.fullscreenTopBar}>
+      <TouchableOpacity style={styles.fullscreenBtn} onPress={() => setFullMap(false)}>
+        <Text style={styles.fullscreenBtnTxt}>⤡  Close map</Text>
+      </TouchableOpacity>
+
+      <View style={styles.fullscreenPill}>
+        <Text style={styles.fullscreenPillTxt}>{visible.length} active</Text>
+      </View>
+    </View>
+  </View>
+</Modal>
+
            </ScrollView>
          </SafeAreaView>
        </LinearGradient>
@@ -331,116 +450,143 @@ const run = async () => {
        <Text style={styles.overviewLabel}>{label}</Text>
      </View>
    );
-   
    const FleetSelector = ({
-     selectedId,
-     setSelectedId,
-     statuses,
-   }: {
-     selectedId: 'all' | DeviceId;
-     setSelectedId: (v: 'all' | DeviceId) => void;
-     statuses: Record<DeviceId, BusStatus>;
-   }) => (
-     <View style={styles.fleetSection}>
-       <Text style={styles.sectionTitle}>🚍 Select Bus</Text>
-       <ScrollView
-         horizontal
-         showsHorizontalScrollIndicator={false}
-         contentContainerStyle={styles.fleetBarContent}
-       >
-         <Chip
-           id="all"
-           selected={selectedId === 'all'}
-           label="ALL BUSES"
-           sub="Fleet View"
-           onPress={() => setSelectedId('all')}
-         />
-         {DEVICES.map(id => (
-           <Chip
-             key={id}
-             id={id}
-             selected={selectedId === id}
-             label={id.toUpperCase()}
-             sub={statuses[id] ? `${statuses[id].passengers} pax` : 'Offline'}
-             onPress={() => setSelectedId(id)}
-             online={!!statuses[id]}
-           />
-         ))}
-       </ScrollView>
-     </View>
-   );
-   
-   const Chip = ({
-     id,
-     selected,
-     label,
-     sub,
-     onPress,
-     online = false,
-   }: {
-     id: string;
-     selected: boolean;
-     label: string;
-     sub: string;
-     onPress: () => void;
-     online?: boolean;
-   }) => (
-     <TouchableOpacity
-       style={[styles.busChip, selected && styles.busChipActive]}
-       onPress={onPress}
-       activeOpacity={0.8}
-     >
-       <View style={styles.busChipContent}>
-         <Text style={[styles.busChipTxt, selected && styles.busChipTxtActive]}>{label}</Text>
-         <Text style={[styles.busChipSubtxt, selected && styles.busChipSubtxtActive]}>{sub}</Text>
-       </View>
-       {online && <View style={[styles.busStatusDot, { backgroundColor: '#10B981' }]} />}
-     </TouchableOpacity>
-   );
+    selectedId,
+    setSelectedId,
+    statuses,
+    isFresh,
+  }: {
+    selectedId: 'all' | DeviceId;
+    setSelectedId: (v: 'all' | DeviceId) => void;
+    statuses: Record<DeviceId, BusStatus>;
+    isFresh: (id: DeviceId) => boolean;
+  }) => (
+    <View style={styles.fleetSection}>
+      <Text style={styles.sectionTitle}>🚍 Select Bus</Text>
+  
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.fleetBarContent}
+        decelerationRate="fast"
+        snapToAlignment="start"
+        snapToInterval={116}
+        pagingEnabled={false}
+      >
+        <Chip
+          id="all"
+          selected={selectedId === 'all'}
+          label="ALL BUSES"
+          sub="Fleet View"
+          onPress={() => setSelectedId('all')}
+        />
+  
+        {DEVICES.map((id: DeviceId) => {
+          const online = isFresh(id);
+          const pax = statuses[id]?.passengers ?? 0;
+  
+          return (
+            <Chip
+              key={id}
+              id={id}
+              selected={selectedId === id}
+              label={id.toUpperCase()}
+              sub={online ? `${pax} pax` : 'Offline'}
+              onPress={() => setSelectedId(id)}
+              online={online}
+            />
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+  
+  const Chip = ({
+    id,
+    selected,
+    label,
+    sub,
+    onPress,
+    online = false,
+  }: {
+    id: string;
+    selected: boolean;
+    label: string;
+    sub: string;
+    onPress: () => void;
+    online?: boolean;
+  }) => (
+    <TouchableOpacity
+      style={[styles.busChip, selected && styles.busChipActive]}
+      onPress={onPress}
+      activeOpacity={0.8}
+    >
+      <View style={styles.busChipContent}>
+        <Text style={[styles.busChipTxt, selected && styles.busChipTxtActive]}>{label}</Text>
+        <Text style={[styles.busChipSubtxt, selected && styles.busChipSubtxtActive]}>{sub}</Text>
+      </View>
+  
+      {online && <View style={[styles.busStatusDot, { backgroundColor: '#10B981' }]} />}
+    </TouchableOpacity>
+  );
+  
    
    const LiveMap = ({
-     mapRef,
-     buses,
-     selectedId,
-     setSelectedId,
-   }: {
-    mapRef: React.RefObject<MapView | null>; 
-     buses: BusStatus[];
-     selectedId: 'all' | DeviceId;
-     setSelectedId: (id: DeviceId) => void;
-   }) => (
-     <View style={styles.mapSection}>
-       <Text style={styles.sectionTitle}>📍 Live Location</Text>
-       <View style={styles.mapWrapper}>
-         <MapView
-           ref={mapRef}
-           style={styles.map}
-           initialRegion={{
-             latitude: 15.67,
-             longitude: 120.63,
-             latitudeDelta: 0.01,
-             longitudeDelta: 0.01,
-           }}
-         >
-       {buses
-     .filter(bs => Number.isFinite(bs.lat) && Number.isFinite(bs.lng))  // ← add this
-     .map(bs => (
-             <Marker
-               key={bs.id}
-               pinColor={bs.id === selectedId ? '#10B981' : '#059669'}
-               coordinate={{ latitude: bs.lat, longitude: bs.lng }}
-               title={bs.id.toUpperCase()}
-               description={`${bs.passengers} passengers • ${bs.paid} paid`}
-               onPress={() => setSelectedId(bs.id as DeviceId)}
-             />
-           ))}
-         </MapView>
-         <View style={styles.mapOverlay}>
-           <Text style={styles.mapOverlayText}>{buses.length} buses tracked</Text>
-         </View>
-       </View>
-     </View>
-   );
+    mapRef,
+    buses,
+    selectedId,
+    setSelectedId,
+    setFullMap,
+  }: {
+    mapRef: React.RefObject<MapView | null>;
+    buses: BusStatus[];
+    selectedId: 'all' | DeviceId;
+    setSelectedId: (id: DeviceId) => void;
+    setFullMap: (v: boolean) => void;
+  }) => (
+    <View style={styles.mapSection}>
+      <Text style={styles.sectionTitle}>📍 Live Location</Text>
+  
+      {/* use dynamic height */}
+      <View style={[styles.mapWrapper, { height: MAP_HEIGHT }]}>
+        <MapView
+          ref={mapRef}
+          style={styles.map}
+          initialRegion={{
+            latitude: 15.67,
+            longitude: 120.63,
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
+          }}
+          onPress={() => setFullMap(true)}  // 👈 tap anywhere to expand
+        >
+          {buses
+            .filter(bs => Number.isFinite(bs.lat) && Number.isFinite(bs.lng))
+            .map(bs => (
+              <Marker
+                key={bs.id}
+                pinColor={bs.id === selectedId ? '#10B981' : '#059669'}
+                coordinate={{ latitude: bs.lat, longitude: bs.lng }}
+                title={bs.id.toUpperCase()}
+                description={`${bs.passengers} passengers • ${bs.paid} paid`}
+                onPress={() => setSelectedId(bs.id as DeviceId)}
+              />
+            ))}
+        </MapView>
+  
+        {/* small overlay count */}
+        <View style={styles.mapOverlay}>
+          <Text style={styles.mapOverlayText}>{buses.length} buses tracked</Text>
+        </View>
+  
+        {/* expand to fullscreen via FAB as well */}
+        <TouchableOpacity style={styles.mapFab} onPress={() => setFullMap(true)}>
+          <Text style={{ color: '#fff', fontWeight: '800' }}>⤢</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+  
    
    const StatsSection = ({
      selectedId,
@@ -449,12 +595,14 @@ const run = async () => {
      statuses,
      sensors,
      setSelectedId,
+     isFresh,     
    }: {
      selectedId: 'all' | DeviceId;
      activeStatus: BusStatus | undefined;
      activeSensor: SensorData | undefined;
      statuses: Record<DeviceId, BusStatus>;
      sensors: Record<DeviceId, SensorData>;
+     isFresh: (id: DeviceId) => boolean;
      setSelectedId: (id: DeviceId) => void
    }) => {
      if (selectedId === 'all') {
@@ -469,7 +617,7 @@ const run = async () => {
    
            <View style={styles.tableHeader}>
              <Text style={[styles.tableHeaderText, { flex: 1.2 }]}>Bus ID</Text>
-             <Text style={[styles.tableHeaderText, { flex: 1 }]}>Passengers</Text>
+             <Text style={[styles.tableHeaderText, { flex: 1 }]}>Passenger</Text>
              <Text style={[styles.tableHeaderText, { flex: 1 }]}>Paid</Text>
              <Text style={[styles.tableHeaderText, { flex: 1 }]}>Inside</Text>
              <Text style={[styles.tableHeaderText, { flex: 0.8 }]}>Status</Text>
@@ -479,28 +627,54 @@ const run = async () => {
              {DEVICES.map(id => {
                const bs = statuses[id];
                const se = sensors[id];
-               const isOnline = !!bs;
+               const online = isFresh(id); 
+               const pax = statuses[id]?.passengers ?? 0;
                return (
-                 <TouchableOpacity
-                   key={id}
-                   style={[styles.tableRow, isOnline && styles.tableRowOnline]}
-                   onPress={() => setSelectedId(id)}
-                 >
-                   <Text style={[styles.tableCell, { flex: 1.2, fontWeight: '600' }]}>
-                     {id.toUpperCase()}
-                   </Text>
-                   <Text style={[styles.tableCell, { flex: 1 }]}>{bs?.passengers ?? '–'}</Text>
-                   <Text style={[styles.tableCell, { flex: 1 }]}>{bs?.paid ?? '–'}</Text>
-                   <Text style={[styles.tableCell, { flex: 1 }]}>{se?.total ?? '–'}</Text>
-                   <View style={[styles.tableCell, { flex: 0.8 }]}>
-                     <View
-                       style={[
-                         styles.statusDot,
-                         { backgroundColor: isOnline ? '#10B981' : '#9CA3AF' },
-                       ]}
-                     />
-                   </View>
-                 </TouchableOpacity>
+                <TouchableOpacity
+                key={id}
+                style={[styles.tableRow, online && styles.tableRowOnline]}
+                onPress={() => setSelectedId(id)}
+                activeOpacity={0.8}
+              >
+                {/* Bus ID */}
+                <View style={[styles.tableCell, { flex: 1.2 }]}>
+                  <Text style={[styles.tableCellText, { fontWeight: '600' }]}>
+                    {id.toUpperCase()}
+                  </Text>
+                </View>
+              
+                {/* Passengers */}
+                <View style={[styles.tableCell, { flex: 1 }]}>
+                  <Text style={styles.tableCellText}>
+                    {bs?.passengers ?? '–'}
+                  </Text>
+                </View>
+              
+                {/* Paid */}
+                <View style={[styles.tableCell, { flex: 1 }]}>
+                  <Text style={styles.tableCellText}>
+                    {bs?.paid ?? '–'}
+                  </Text>
+                </View>
+              
+                {/* Inside */}
+                <View style={[styles.tableCell, { flex: 1 }]}>
+                  <Text style={styles.tableCellText}>
+                    {se?.total ?? '–'}
+                  </Text>
+                </View>
+              
+                {/* Status */}
+                <View style={[styles.tableCell, { flex: 0.8, alignItems: 'center' }]}>
+                  <View
+                    style={[
+                      styles.statusDot,
+                      { backgroundColor: online ? '#10B981' : '#9CA3AF' },
+                    ]}
+                  />
+                </View>
+              </TouchableOpacity>
+              
                );
              })}
            </ScrollView>
@@ -512,24 +686,15 @@ const run = async () => {
      return (
        <>
          <View style={styles.card}>
-           <View style={styles.cardHeader}>
-             <Text style={styles.cardTitle}>🚌 {selectedId?.toUpperCase()} Status</Text>
-             <View
-               style={[
-                 styles.cardBadge,
-                 { backgroundColor: activeStatus ? '#DCFCE7' : '#F3F4F6' },
-               ]}
-             >
-               <Text
-                 style={[
-                   styles.cardBadgeText,
-                   { color: activeStatus ? '#166534' : '#6B7280' },
-                 ]}
-               >
-                 {activeStatus ? 'Online' : 'Offline'}
-               </Text>
-             </View>
-           </View>
+         <View style={styles.cardHeader}>
+  <Text style={styles.cardTitle}>🚌 {selectedId?.toUpperCase()} Status</Text>
+  <View style={[styles.cardBadge, { backgroundColor: isFresh(selectedId as DeviceId) ? '#DCFCE7' : '#F3F4F6' }]}>
+    <Text style={[styles.cardBadgeText, { color: isFresh(selectedId as DeviceId) ? '#166534' : '#6B7280' }]}>
+      {isFresh(selectedId as DeviceId) ? 'Online' : 'Offline'}
+    </Text>
+  </View>
+</View>
+
    
            {activeStatus ? (
              <View style={styles.statsGrid}>
@@ -538,7 +703,7 @@ const run = async () => {
                    <Text style={styles.statIconText}>👥</Text>
                  </View>
                  <Text style={styles.statValue}>{activeStatus.passengers}</Text>
-                 <Text style={styles.statLabel}>Passengers</Text>
+                 <Text style={styles.statLabel}>Passenger</Text>
                </View>
    
                <View style={styles.statCard}>
@@ -664,9 +829,67 @@ const run = async () => {
      /* Scroll/Map */
      scrollContent: {},
      mapSection: { marginBottom: 20 },
-     mapWrapper: { height: 220, borderRadius: 16, overflow: 'hidden', position: 'relative',
-       shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15,
-       shadowRadius: 12, elevation: 5 },
+     mapWrapper: {
+      // height removed here because we now set it inline with MAP_HEIGHT
+      borderRadius: 16,
+      overflow: 'hidden',
+      position: 'relative',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.15,
+      shadowRadius: 12,
+      elevation: 5,
+    },
+    mapFab: {
+      position: 'absolute',
+      right: 12,
+      top: 12,
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: 'rgba(0,0,0,0.45)',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+  
+    // NEW: fullscreen overlay
+    fullscreenWrap: {
+      position: 'absolute',
+      top: 0, left: 0, right: 0, bottom: 0,
+      backgroundColor: '#000',
+      zIndex: 999,
+    },
+    fullscreenTopBar: {
+      position: 'absolute',
+      top: 40,
+      left: 16,
+      right: 16,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    fullscreenBtn: {
+      backgroundColor: '#E8F5E8',
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      borderRadius: 12,
+    },
+    fullscreenBtnTxt: {
+      color: '#1B5E20',
+      fontWeight: '800',
+      letterSpacing: 0.3,
+    },
+    fullscreenPill: {
+      backgroundColor: '#E8F5E8',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+    },
+    fullscreenPillTxt: {
+      color: '#1B5E20',
+      fontWeight: '800',
+    },
+  
      map: { flex: 1 },
      mapOverlay: { position: 'absolute', top: 12, right: 12, backgroundColor: 'rgba(255,255,255,0.9)',
        paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },

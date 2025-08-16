@@ -14,7 +14,7 @@ import {
   View,
 } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
-import { API_BASE_URL } from '../../../config'; // adjust path if needed
+import { API_BASE_URL } from '../../../config';
 
 type Receipt = {
   id: number;
@@ -28,6 +28,7 @@ type Receipt = {
   fare: string;
   qr?: string;
   qr_url?: string;
+  qr_link?: string; // in case your API returns this
   paid: boolean;
 };
 
@@ -36,40 +37,28 @@ export default function ReceiptDetail() {
   const [receipt, setReceipt] = React.useState<Receipt | null>(null);
   const [loading, setLoading] = React.useState<boolean>(true);
 
-
-
-console.log('[ReceiptDetail] raw data param:', data);
-
-let parsed: any = null;
-try {
-  parsed = data ? JSON.parse(decodeURIComponent(data)) : null;
-  console.log('[ReceiptDetail] parsed:', parsed);
-} catch (e) {
-  console.warn('[ReceiptDetail] parse error:', e);
-}
+  // Parse once (if present via deeplink)
+  const parsed = React.useMemo<Partial<Receipt> | null>(() => {
+    try {
+      return data ? JSON.parse(decodeURIComponent(data)) : null;
+    } catch {
+      return null;
+    }
+  }, [data]);
 
   React.useEffect(() => {
-    let parsed: Receipt | null = null;
-    if (data) {
-      try {
-        parsed = JSON.parse(decodeURIComponent(data));
-      } catch (e) {
-        // ignore; we'll fetch below
-      }
-    }
-    // If parsed has origin/destination, we're good. Otherwise, fetch by ID.
+    // If parsed has enough info, show immediately
     if (parsed?.origin && parsed?.destination) {
-      setReceipt(parsed);
+      setReceipt(parsed as Receipt);
       setLoading(false);
       return;
     }
 
-    // Fallback: fetch by ID
+    // Otherwise fetch by ID
     (async () => {
       try {
         if (!id) {
-          // As a last resort, show any parsed data (even if partial) or stop loading
-          if (parsed) setReceipt(parsed);
+          if (parsed) setReceipt(parsed as Receipt);
           setLoading(false);
           return;
         }
@@ -81,20 +70,19 @@ try {
         if (!resp.ok) throw new Error(`Server ${resp.status}`);
         const json = (await resp.json()) as Receipt;
         setReceipt(json);
-      } catch (err) {
-        // If fetch fails but parsed exists, at least show that
-        if (parsed) setReceipt(parsed);
+      } catch {
+        if (parsed) setReceipt(parsed as Receipt);
       } finally {
         setLoading(false);
       }
     })();
-  }, [id, data]);
+  }, [id, parsed]);
 
   if (loading) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <StatusBar backgroundColor="#5a7c65" barStyle="light-content" />
-        <View style={[styles.background, { alignItems: 'center', justifyContent: 'center' }]}>
+        <View style={[styles.background, styles.center]}>
           <ActivityIndicator size="large" color="#fff" />
           <Text style={{ color: '#fff', marginTop: 12 }}>Loading receipt…</Text>
         </View>
@@ -102,12 +90,11 @@ try {
     );
   }
 
-  // still null? show a friendly fallback
   if (!receipt) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <StatusBar backgroundColor="#5a7c65" barStyle="light-content" />
-        <View style={[styles.background, { alignItems: 'center', justifyContent: 'center' }]}>
+        <View style={[styles.background, styles.center]}>
           <Text style={{ color: '#fff' }}>Receipt not found.</Text>
         </View>
       </SafeAreaView>
@@ -118,7 +105,13 @@ try {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar backgroundColor="#5a7c65" barStyle="light-content" />
       <View style={styles.background}>
-        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.scrollContainer}
+          showsVerticalScrollIndicator
+          bounces
+          keyboardShouldPersistTaps="handled"
+        >
           <View style={styles.receiptCard}>
             <View style={styles.header}>
               <Text style={styles.headerLabel}>Reference No.</Text>
@@ -177,24 +170,36 @@ try {
               </View>
 
               <View style={styles.qrSection}>
-  <View style={styles.qrContainer}>
-    {(() => {
-      const qrValue = (receipt as any).qr_link ?? receipt.qr ?? "";
-      if (qrValue) {
-        return <QRCode value={qrValue} size={120} backgroundColor="white" color="#2d5016" />;
-      }
-      if (receipt.qr_url) {
-        return <Image source={{ uri: receipt.qr_url }} style={styles.qrImage} resizeMode="contain" />;
-      }
-      return (
-        <View style={styles.qrPlaceholder}>
-          <Ionicons name="qr-code" size={60} color="#a8b5a1" />
-        </View>
-      );
-    })()}
-  </View>
-</View>
-
+                <View style={styles.qrContainer}>
+                  {(() => {
+                    const qrValue = (receipt as any).qr_link ?? receipt.qr ?? '';
+                    if (qrValue) {
+                      return (
+                        <QRCode
+                          value={qrValue}
+                          size={120}
+                          backgroundColor="white"
+                          color="#2d5016"
+                        />
+                      );
+                    }
+                    if (receipt.qr_url) {
+                      return (
+                        <Image
+                          source={{ uri: receipt.qr_url }}
+                          style={styles.qrImage}
+                          resizeMode="contain"
+                        />
+                      );
+                    }
+                    return (
+                      <View style={styles.qrPlaceholder}>
+                        <Ionicons name="qr-code" size={60} color="#a8b5a1" />
+                      </View>
+                    );
+                  })()}
+                </View>
+              </View>
             </View>
           </View>
         </ScrollView>
@@ -202,23 +207,18 @@ try {
     </SafeAreaView>
   );
 }
+
 /* ── styles ───────────────────────────────────────────── */
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#5a7c65',
-  },
-  
-  background: {
-    flex: 1,
-    backgroundColor: '#5a7c65',
+  safeArea: { flex: 1, backgroundColor: '#5a7c65' },
+  background: { flex: 1, backgroundColor: '#5a7c65' },
+  center: { alignItems: 'center', justifyContent: 'center' },
+
+  // Moved padding here so scrolling always works
+  scrollContainer: {
     paddingHorizontal: 20,
     paddingVertical: 30,
-  },
-
-  scrollContainer: {
-    flexGrow: 1,
-    justifyContent: 'center',
+    paddingBottom: 40, // extra space at bottom
   },
 
   receiptCard: {
@@ -226,17 +226,14 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     marginHorizontal: 4,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.15,
     shadowRadius: 20,
     elevation: 12,
     overflow: 'hidden',
   },
 
-  /* ── header styles ─────────────────────────────────── */
+  /* header */
   header: {
     backgroundColor: '#f8faf9',
     paddingVertical: 20,
@@ -245,7 +242,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
   },
-
   headerLabel: {
     fontSize: 11,
     color: '#6b7c6b',
@@ -254,7 +250,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 4,
   },
-
   headerValue: {
     fontSize: 26,
     fontWeight: '800',
@@ -262,14 +257,13 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
 
-  /* ── perforated divider ────────────────────────────── */
+  /* perforated divider */
   perforatedDivider: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#ffffff',
     height: 20,
   },
-
   perforationLeft: {
     width: 20,
     height: 20,
@@ -278,7 +272,6 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 20,
     marginLeft: -10,
   },
-
   dottedLine: {
     flex: 1,
     borderTopWidth: 1.5,
@@ -286,7 +279,6 @@ const styles = StyleSheet.create({
     borderColor: '#c4d1c4',
     marginHorizontal: 8,
   },
-
   perforationRight: {
     width: 20,
     height: 20,
@@ -296,26 +288,11 @@ const styles = StyleSheet.create({
     marginRight: -10,
   },
 
-  /* ── content styles ────────────────────────────────── */
-  content: {
-    paddingHorizontal: 24,
-    paddingVertical: 24,
-  },
-
-  detailRow: {
-    flexDirection: 'row',
-    marginBottom: 20,
-    gap: 16,
-  },
-
-  detailCol: {
-    flex: 1,
-  },
-
-  detailBlock: {
-    marginBottom: 20,
-  },
-
+  /* content */
+  content: { paddingHorizontal: 24, paddingVertical: 24 },
+  detailRow: { flexDirection: 'row', marginBottom: 20, gap: 16 },
+  detailCol: { flex: 1 },
+  detailBlock: { marginBottom: 20 },
   detailLabel: {
     fontSize: 12,
     fontWeight: '600',
@@ -324,83 +301,31 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.3,
   },
+  detailValue: { fontSize: 16, fontWeight: '700', color: '#1a1a1a', lineHeight: 20 },
 
-  detailValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    lineHeight: 20,
-  },
+  commuterRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  commuterInfo: { flex: 1 },
+  iconContainer: { backgroundColor: '#f0f4f0', borderRadius: 20, padding: 8, marginLeft: 12 },
 
-  commuterRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-  },
+  thinDivider: { borderTopWidth: 1, borderColor: '#e8ede8', marginVertical: 16 },
 
-  commuterInfo: {
-    flex: 1,
-  },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
+  totalLabel: { fontSize: 14, fontWeight: '600', color: '#6b7c6b' },
+  totalValue: { fontSize: 22, fontWeight: '900', color: '#2d5016', letterSpacing: -0.5 },
 
-  iconContainer: {
-    backgroundColor: '#f0f4f0',
-    borderRadius: 20,
-    padding: 8,
-    marginLeft: 12,
-  },
-
-  thinDivider: {
-    borderTopWidth: 1,
-    borderColor: '#e8ede8',
-    marginVertical: 16,
-  },
-
-  totalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-
-  totalLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#6b7c6b',
-  },
-
-  totalValue: {
-    fontSize: 22,
-    fontWeight: '900',
-    color: '#2d5016',
-    letterSpacing: -0.5,
-  },
-
-  /* ── QR code styles ────────────────────────────────── */
-  qrSection: {
-    alignItems: 'center',
-    marginTop: 24,
-  },
-
+  /* QR code */
+  qrSection: { alignItems: 'center', marginTop: 24 },
   qrContainer: {
     backgroundColor: '#f8faf9',
     padding: 20,
     borderRadius: 16,
     shadowColor: '#5a7c65',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 4,
   },
-
-  qrImage: {
-    width: 120,
-    height: 120,
-    borderRadius: 8,
-  },
-
+  qrImage: { width: 120, height: 120, borderRadius: 8 },
   qrPlaceholder: {
     width: 120,
     height: 120,

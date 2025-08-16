@@ -57,28 +57,154 @@ const calculateDuration = (start: string, end: string): string => {
   return `${mins}m`;
 };
 
-// Helper to check if current time is within a time range
+// Helper to check if current time is within a time range like "1:30 PM - 2:10 PM"
 const isCurrentlyActive = (timeRange: string): boolean => {
+  if (!timeRange.includes(' - ')) return false;
+  const [startStr, endStr] = timeRange.split(' - ');
+
+  const toMinutes = (t: string) => {
+    const m = t.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (!m) return -1;
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const period = m[3].toUpperCase();
+    if (h === 12) h = 0;
+    if (period === 'PM') h += 12;
+    return h * 60 + min;
+  };
+
   const now = new Date();
-  const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-  
-  if (timeRange.includes(' - ')) {
-    const [start, end] = timeRange.split(' - ').map(t => t.replace(/\s*(AM|PM)/g, ''));
-    // Convert to 24-hour format for comparison
-    const convert12to24 = (time12: string): string => {
-      const [time, period] = time12.split(/\s*(AM|PM)/);
-      let [hours, minutes] = time.split(':').map(Number);
-      if (period === 'PM' && hours !== 12) hours += 12;
-      if (period === 'AM' && hours === 12) hours = 0;
-      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-    };
-    
-    const startTime = convert12to24(start);
-    const endTime = convert12to24(end);
-    return currentTime >= startTime && currentTime <= endTime;
-  }
-  return false;
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const s = toMinutes(startStr);
+  const e = toMinutes(endStr);
+  if (s < 0 || e < 0) return false;
+
+  // handle ranges that cross midnight
+  return e >= s ? (nowMin >= s && nowMin <= e) : (nowMin >= s || nowMin <= e);
 };
+
+const TimelineRowItem = React.memo(function TimelineRowItem({
+  item,
+  index,
+  isLast,                     // ← add
+  fadeAnim,
+  slideAnim,
+}: {
+  item: TimelineItem;
+  index: number;
+  isLast: boolean;            // ← add
+  fadeAnim: Animated.Value;
+  slideAnim: Animated.Value;
+}) {
+
+  const itemAnim = React.useRef(new Animated.Value(0)).current;
+  const scaleAnim = React.useRef(new Animated.Value(0.8)).current;
+
+  React.useEffect(() => {
+    Animated.parallel([
+      Animated.timing(itemAnim, { toValue: 1, duration: 600, delay: index * 120, useNativeDriver: true }),
+      Animated.spring(scaleAnim, { toValue: 1, delay: index * 120, useNativeDriver: true }),
+    ]).start();
+  }, [index, itemAnim, scaleAnim]);
+
+  return (
+    <Animated.View
+      style={[
+        styles.timelineRow,
+        { opacity: fadeAnim, transform: [{ translateY: slideAnim }, { scale: scaleAnim }] },
+      ]}
+    >
+      <View style={styles.timelineConnector}>
+        <Animated.View
+          style={[
+            styles.timelineDot,
+            item.type === 'trip' && styles.tripDot,
+            item.isActive && styles.activeDot,
+            {
+              transform: [
+                {
+                  scale: item.isActive
+                    ? itemAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.2] })
+                    : 1,
+                },
+              ],
+            },
+          ]}
+        >
+          {item.isActive && (
+            <Animated.View
+              style={[
+                styles.activePulse,
+                {
+                  transform: [{ scale: itemAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 2] }) }],
+                  opacity: itemAnim.interpolate({ inputRange: [0, 1], outputRange: [0.8, 0.2] }),
+                },
+              ]}
+            />
+          )}
+          <Ionicons name={item.type === 'trip' ? 'bus' : 'location'} size={item.isActive ? 10 : 8} color="#fff" style={styles.dotIcon} />
+        </Animated.View>
+
+        {!isLast && (                 // ← instead of the placeholder condition
+    <Animated.View style={[styles.timelineLine, { opacity: fadeAnim, transform: [{ scaleY: itemAnim }] }]} />
+  )}
+
+      </View>
+
+      <Animated.View
+        style={[
+          styles.card,
+          item.isActive && styles.activeCard,
+          { transform: [{ scale: scaleAnim }] },
+        ]}
+      >
+        {item.isActive && (
+          <Animated.View style={[styles.activeIndicator, { opacity: itemAnim }]}>
+            <Ionicons name="radio-button-on" size={12} color="#fff" />
+            <Text style={styles.activeIndicatorText}>LIVE</Text>
+          </Animated.View>
+        )}
+
+        <View style={styles.cardHeader}>
+          <View style={styles.timeContainer}>
+            <View style={[styles.iconContainer, item.isActive && styles.activeIconContainer]}>
+              <Ionicons name={item.type === 'trip' ? 'bus-outline' : 'location-outline'} size={18} color={item.isActive ? '#fff' : '#2E7D32'} />
+            </View>
+            <View style={styles.timeTextContainer}>
+              <Text style={[styles.timeText, item.isActive && styles.activeTimeText]}>{item.time}</Text>
+              <Text style={[styles.typeLabel, item.isActive && styles.activeTypeLabel]}>
+                {item.type === 'trip' ? 'Journey' : 'Stop'}
+              </Text>
+            </View>
+          </View>
+
+          {item.duration && (
+            <View style={[styles.durationBadge, item.isActive && styles.activeDurationBadge]}>
+              <Ionicons name="time-outline" size={12} color={item.isActive ? '#4CAF50' : '#81C784'} />
+              <Text style={[styles.durationText, item.isActive && styles.activeDurationText]}>{item.duration}</Text>
+            </View>
+          )}
+        </View>
+
+        <Text style={[styles.label, item.isActive && styles.activeLabel]}>{item.label}</Text>
+
+        {item.loc && (
+          <View style={styles.locationRow}>
+            <View style={styles.routeContainer}>
+              <Ionicons name="navigate" size={14} color={item.isActive ? '#4CAF50' : '#81C784'} />
+              <Text style={[styles.locationText, item.isActive && styles.activeLocationText]}>{item.loc}</Text>
+            </View>
+            {item.type === 'trip' && (
+              <View style={[styles.tripBadge, item.isActive && styles.activeTripBadge]}>
+                <Text style={[styles.tripBadgeText, item.isActive && styles.activeTripBadgeText]}>In Transit</Text>
+              </View>
+            )}
+          </View>
+        )}
+      </Animated.View>
+    </Animated.View>
+  );
+});
 
 export default function PaoRouteSchedule() {
   const [events, setEvents] = useState<TimelineItem[]>([]);
@@ -91,107 +217,174 @@ export default function PaoRouteSchedule() {
   const slideAnim = useRef(new Animated.Value(50)).current;
   const headerAnim = useRef(new Animated.Value(0)).current;
 
+  
   const buildTimeline = async () => {
     setLoading(true);
     setError(null);
     fadeAnim.setValue(0);
     slideAnim.setValue(50);
-    
+  
+    // helpers for robust dedupe
+    const normText = (s = '') => s.replace(/\s+/g, ' ').trim().toLowerCase();
+    const toMinutes = (t: string) => {
+      // accepts "07:40", "7:40", "7:40 AM", "07:40 pm"
+      const m = t.trim().match(/^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/i);
+      if (!m) return NaN;
+      let h = parseInt(m[1], 10);
+      const min = parseInt(m[2], 10);
+      const period = (m[3] || '').toUpperCase();
+      if (period) {
+        if (h === 12) h = 0;
+        if (period === 'PM') h += 12;
+      }
+      return h * 60 + min;
+    };
+    const normRange = (range = '') => {
+      // unify -, – and —; return "startMin-endMin"
+      const parts = range.replace(/[–—]/g, '-').split('-').map(p => p.trim());
+      if (parts.length !== 2) return range;
+      const a = toMinutes(parts[0]);
+      const b = toMinutes(parts[1]);
+      return isNaN(a) || isNaN(b) ? range : `${a}-${b}`;
+    };
+  
     try {
       const token = await AsyncStorage.getItem('@token');
       if (!token) throw new Error('Authentication token not found.');
-
-      // Correctly format the date to YYYY-MM-DD
+  
       const year = selectedDate.getFullYear();
-      const month = (selectedDate.getMonth() + 1).toString().padStart(2, '0');
-      const day = selectedDate.getDate().toString().padStart(2, '0');
+      const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const day = String(selectedDate.getDate()).padStart(2, '0');
       const dateForAPI = `${year}-${month}-${day}`;
-
+  
       const tripsRes = await fetch(`${API_BASE_URL}/pao/bus-trips?date=${dateForAPI}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-
-      if (!tripsRes.ok) {
-        throw new Error('Failed to fetch schedule. Is the PAO assigned to a bus?');
-      }
-
+      if (!tripsRes.ok) throw new Error('Failed to fetch schedule. Is the PAO assigned to a bus?');
+  
       const trips = await tripsRes.json();
+  
+      type StopRow = { stop_name: string; arrive_time: string; depart_time: string };
       const timeline: TimelineItem[] = [];
 
       for (const t of trips) {
-        const stopsRes = await fetch(`${API}/pao/stop-times?trip_id=${t.id}`, {
+        const stopsRes = await fetch(`${API_BASE_URL}/pao/stop-times?trip_id=${t.id}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!stopsRes.ok) continue;
+  
+        const stops: StopRow[] = await stopsRes.json();
+// helpers
+const clean = (s: string = '') => s.replace(/\s+/g, ' ').trim();
+const parseEndpointsFromTitle = (title: string) => {
+  const parts = clean(title).split(/\s*[-–—→]\s*/);
+  return parts.length >= 2 ? { origin: parts[0], destination: parts[1] } : null;
+};
 
-        const stops = await stopsRes.json();
-        let prevStop: any = null;
+const hhmm = (s: string) => (s || '').slice(0, 5);
+const tripStartHM = hhmm(t.start_time);
+const tripEndHM   = hhmm(t.end_time);
 
-        stops.forEach((st: any) => {
-          if (prevStop && prevStop.depart_time !== st.arrive_time) {
-            const timeRange = `${formatTime(prevStop.depart_time)} - ${formatTime(st.arrive_time)}`;
-            timeline.push({
-              key: `trip-${t.id}-${prevStop.stop_name}`,
-              time: timeRange,
-              label: `Trip #${t.number}`,
-              loc: `${prevStop.stop_name} → ${st.stop_name}`,
-              type: 'trip',
-              duration: calculateDuration(prevStop.depart_time, st.arrive_time),
-              isActive: isCurrentlyActive(timeRange),
-            });
-          }
-          if (st.arrive_time !== st.depart_time) {
-            const timeRange = `${formatTime(st.arrive_time)} - ${formatTime(st.depart_time)}`;
-            timeline.push({
-              key: `stop-${t.id}-${st.stop_name}`,
-              time: timeRange,
-              label: 'Service Stop',
-              loc: st.stop_name,
-              type: 'stop',
-              duration: calculateDuration(st.arrive_time, st.depart_time),
-              isActive: isCurrentlyActive(timeRange),
-            });
-          }
-          prevStop = st;
-        });
+// try stops first
+const firstStop = stops[0]?.stop_name;
+const lastStop  = stops[stops.length - 1]?.stop_name;
+const sameEnds  = firstStop && lastStop && clean(firstStop).toLowerCase() === clean(lastStop).toLowerCase();
+
+// try to parse from the trip "number" string if stops are missing/identical
+const parsed = parseEndpointsFromTitle(t.number || '');
+let origin = firstStop;
+let destination = lastStop;
+if (!origin || !destination || sameEnds) {
+  if (parsed) {
+    origin = parsed.origin;
+    destination = parsed.destination;
+  } else {
+    origin = undefined as unknown as string;        // hide the location row if we can't infer
+    destination = undefined as unknown as string;
+  }
+}
+
+const tripTitle = clean(t.number || '');
+const tripRange = `${formatTime(tripStartHM)} - ${formatTime(tripEndHM)}`;
+
+timeline.push({
+  key: `trip-full-${t.id}`,
+  time: tripRange,
+  label: tripTitle,                // ← no "Trip #"
+  loc: (origin && destination) ? `${origin} → ${destination}` : undefined,
+  type: 'trip',
+  duration: calculateDuration(tripStartHM, tripEndHM),
+  isActive: isCurrentlyActive(tripRange),
+});
+
+
+
+
+
+let prev: StopRow | null = null;
+for (let i = 0; i < stops.length; i++) {
+  const st = stops[i];
+
+if (prev?.depart_time && st.arrive_time) {
+  const legRange = `${formatTime(prev.depart_time)} - ${formatTime(st.arrive_time)}`;
+  timeline.push({
+    key: `trip-leg-${t.id}-${i}-${prev.depart_time}-${st.arrive_time}`,
+    time: legRange,
+    label: tripTitle,              // ← no "Trip #"
+    loc: `${prev.stop_name} → ${st.stop_name}`,
+    type: 'trip',
+    duration: calculateDuration(prev.depart_time, st.arrive_time),
+    isActive: isCurrentlyActive(legRange),
+  });
+}
+
+
+  // Service stop dwell (keep your existing check)
+  if (st.arrive_time && st.depart_time && st.arrive_time !== st.depart_time) {
+    const timeRange = `${formatTime(st.arrive_time)} - ${formatTime(st.depart_time)}`;
+    timeline.push({
+      key: `stop-${t.id}-${i}-${st.arrive_time}-${st.depart_time}`,
+      time: timeRange,
+      label: 'Service Stop',
+      loc: st.stop_name,
+      type: 'stop',
+      duration: calculateDuration(st.arrive_time, st.depart_time),
+      isActive: isCurrentlyActive(timeRange),
+    });
+  }
+
+  prev = st;
+}
+
       }
-      
-      setEvents(timeline);
-      
-      // Animate in the content
+  
+      // Final-pass dedupe using normalized, DISPLAY values
+      const seenDisplay = new Set<string>();
+      const deduped = timeline.filter((it) => {
+        const k = `${it.type}|${normText(it.label)}|${normText(it.loc || '')}|${normRange(it.time)}`;
+        if (seenDisplay.has(k)) return false;
+        seenDisplay.add(k);
+        return true;
+      });
+  
+      setEvents(deduped);
+  
       Animated.parallel([
-        Animated.timing(fadeAnim, { 
-          toValue: 1, 
-          duration: 800, 
-          useNativeDriver: true 
-        }),
-        Animated.timing(slideAnim, { 
-          toValue: 0, 
-          duration: 800, 
-          useNativeDriver: true 
-        }),
-        Animated.timing(headerAnim, { 
-          toValue: 1, 
-          duration: 600, 
-          useNativeDriver: true 
-        })
+        Animated.timing(fadeAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+        Animated.timing(slideAnim, { toValue: 0, duration: 800, useNativeDriver: true }),
+        Animated.timing(headerAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
       ]).start();
-      
     } catch (e: any) {
       console.error(e.message);
       setError(e.message);
       setEvents([]);
-      Alert.alert(
-        'Schedule Error',
-        e.message,
-        [{ text: 'OK', style: 'default' }]
-      );
+      Alert.alert('Schedule Error', e.message, [{ text: 'OK', style: 'default' }]);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   };
-
+  
   useEffect(() => {
     buildTimeline();
     // Animate header on mount
@@ -248,164 +441,7 @@ export default function PaoRouteSchedule() {
   const totalTrips = events.filter(e => e.type === 'trip').length;
   const activeEvents = events.filter(e => e.isActive).length;
 
-  const renderTimelineItem = ({ item, index }: { item: TimelineItem; index: number }) => {
-    const itemAnim = useRef(new Animated.Value(0)).current;
-    const scaleAnim = useRef(new Animated.Value(0.8)).current;
-    
-    useEffect(() => {
-      Animated.parallel([
-        Animated.timing(itemAnim, {
-          toValue: 1,
-          duration: 600,
-          delay: index * 120,
-          useNativeDriver: true,
-        }),
-        Animated.spring(scaleAnim, {
-          toValue: 1,
-          delay: index * 120,
-          useNativeDriver: true,
-        })
-      ]).start();
-    }, []);
-
-    return (
-      <Animated.View 
-        style={[
-          styles.timelineRow, 
-          { 
-            opacity: fadeAnim,
-            transform: [
-              { translateY: slideAnim },
-              { scale: scaleAnim }
-            ]
-          }
-        ]}
-      >
-        <View style={styles.timelineConnector}>
-          <Animated.View style={[
-            styles.timelineDot, 
-            item.type === 'trip' && styles.tripDot,
-            item.isActive && styles.activeDot,
-            {
-              transform: [{
-                scale: item.isActive ? itemAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [1, 1.2],
-                }) : 1
-              }]
-            }
-          ]}>
-            {item.isActive && (
-              <Animated.View style={[styles.activePulse, {
-                transform: [{
-                  scale: itemAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [1, 2],
-                  })
-                }],
-                opacity: itemAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [0.8, 0.2],
-                })
-              }]} />
-            )}
-            <Ionicons 
-              name={item.type === 'trip' ? 'bus' : 'location'} 
-              size={item.isActive ? 10 : 8} 
-              color="#fff" 
-              style={styles.dotIcon}
-            />
-          </Animated.View>
-          {index < events.length - 1 && (
-            <Animated.View 
-              style={[
-                styles.timelineLine,
-                {
-                  opacity: fadeAnim,
-                  transform: [{
-                    scaleY: itemAnim
-                  }]
-                }
-              ]} 
-            />
-          )}
-        </View>
-        
-        <Animated.View style={[
-          styles.card,
-          item.isActive && styles.activeCard,
-          {
-            transform: [{
-              scale: scaleAnim
-            }]
-          }
-        ]}>
-          {item.isActive && (
-            <Animated.View style={[styles.activeIndicator, {
-              opacity: itemAnim
-            }]}>
-              <Ionicons name="radio-button-on" size={12} color="#fff" />
-              <Text style={styles.activeIndicatorText}>LIVE</Text>
-            </Animated.View>
-          )}
-          
-          <View style={styles.cardHeader}>
-            <View style={styles.timeContainer}>
-              <View style={[styles.iconContainer, item.isActive && styles.activeIconContainer]}>
-                <Ionicons 
-                  name={item.type === 'trip' ? 'bus-outline' : 'location-outline'} 
-                  size={18} 
-                  color={item.isActive ? '#fff' : '#2E7D32'} 
-                />
-              </View>
-              <View style={styles.timeTextContainer}>
-                <Text style={[styles.timeText, item.isActive && styles.activeTimeText]}>
-                  {item.time}
-                </Text>
-                <Text style={[styles.typeLabel, item.isActive && styles.activeTypeLabel]}>
-                  {item.type === 'trip' ? 'Journey' : 'Stop'}
-                </Text>
-              </View>
-            </View>
-            {item.duration && (
-              <View style={[styles.durationBadge, item.isActive && styles.activeDurationBadge]}>
-                <Ionicons name="time-outline" size={12} color={item.isActive ? '#4CAF50' : '#81C784'} />
-                <Text style={[styles.durationText, item.isActive && styles.activeDurationText]}>
-                  {item.duration}
-                </Text>
-              </View>
-            )}
-          </View>
-          
-          <Text style={[styles.label, item.isActive && styles.activeLabel]}>
-            {item.label}
-          </Text>
-          
-          {item.loc && (
-            <View style={styles.locationRow}>
-              <View style={styles.routeContainer}>
-                <Ionicons 
-                  name="navigate" 
-                  size={14} 
-                  color={item.isActive ? '#4CAF50' : '#81C784'} 
-                />
-                <Text style={[styles.locationText, item.isActive && styles.activeLocationText]}>
-                  {item.loc}
-                </Text>
-              </View>
-              {item.type === 'trip' && (
-                <View style={[styles.tripBadge, item.isActive && styles.activeTripBadge]}>
-                  <Text style={[styles.tripBadgeText, item.isActive && styles.activeTripBadgeText]}>
-                    In Transit
-                  </Text>
-                </View>
-              )}
-            </View>
-          )}
-        </Animated.View>
-      </Animated.View>
-    );
-  };
+ 
 
   if (error) {
     return (
@@ -432,40 +468,56 @@ export default function PaoRouteSchedule() {
         </Animated.View>
       </SafeAreaView>
     );
+    
   }
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#1B5E20" />
       
-      {/* Enhanced Gradient Header */}
       <Animated.View style={[styles.header, { opacity: headerAnim }]}>
-        <View style={styles.headerGradientOverlay} />
-        <View style={styles.headerContent}>
-          <View style={styles.headerTitleContainer}>
-            <View style={styles.headerIcon}>
-              <Ionicons name="bus" size={28} color="#fff" />
-            </View>
-            <View>
-              <Text style={styles.headerTitle}>Bus Schedule</Text>
-              <Text style={styles.headerSubtitle}>
-                {isToday && activeEvents > 0 
-                  ? `🟢 ${activeEvents} active • ${totalTrips} trips today`
-                  : `📅 ${totalTrips} trips scheduled`
-                }
-              </Text>
-            </View>
-          </View>
-          
-          <TouchableOpacity style={styles.dateButton} onPress={showDatePicker}>
-            <Ionicons name="calendar" size={18} color="#2E7D32" />
-            <Text style={styles.dateButtonText}>{getDateDisplayText()}</Text>
-            <Ionicons name="chevron-down" size={14} color="#2E7D32" />
-          </TouchableOpacity>
-        </View>
-      </Animated.View>
+  <View style={styles.headerGradientOverlay} />
 
-      {/* Enhanced Stats Row */}
+  <View style={styles.headerContent}>
+    {/* TOP ROW: Icon + Title */}
+    <View style={styles.headerTitleContainer}>
+      <View style={styles.headerIcon}>
+        <Ionicons name="bus" size={28} color="#fff" />
+      </View>
+      <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
+        Bus Schedule
+      </Text>
+    </View>
+
+    {/* BOTTOM ROW: Subtitle (left) + Date Pill (right) */}
+    <View style={styles.headerBottomRow}>
+      <Text style={styles.headerSubtitle} numberOfLines={1} ellipsizeMode="tail">
+        {isToday && activeEvents > 0
+          ? `🟢 ${activeEvents} active • ${totalTrips} trips today`
+          : `📅 ${totalTrips} trips scheduled`}
+      </Text>
+
+      <TouchableOpacity
+        style={styles.dateButton}
+        onPress={showDatePicker}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      >
+        <Ionicons name="calendar" size={18} color="#2E7D32" />
+        <Text
+          style={styles.dateButtonText}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+          allowFontScaling={false}
+        >
+          {getDateDisplayText()}
+        </Text>
+        <Ionicons name="chevron-down" size={14} color="#2E7D32" />
+      </TouchableOpacity>
+    </View>
+  </View>
+</Animated.View>
+
+
       {!loading && events.length > 0 && (
         <Animated.View style={[styles.statsRow, { 
           opacity: fadeAnim,
@@ -549,21 +601,31 @@ export default function PaoRouteSchedule() {
         </Animated.View>
       ) : (
         <FlatList
-          data={events}
-          keyExtractor={item => item.key}
-          contentContainerStyle={styles.list}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl 
-              refreshing={refreshing} 
-              onRefresh={onRefresh} 
-              tintColor="#4CAF50"
-              colors={['#4CAF50']}
-              progressBackgroundColor="#E8F5E8"
-            />
-          }
-          renderItem={renderTimelineItem}
-        />
+        data={events}
+        keyExtractor={item => item.key}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#4CAF50"
+            colors={['#4CAF50']}
+            progressBackgroundColor="#E8F5E8"
+          />
+        }
+        renderItem={({ item, index }) => (
+          <TimelineRowItem
+            item={item}
+            index={index}
+            isLast={index === events.length - 1}
+            fadeAnim={fadeAnim}
+            slideAnim={slideAnim}
+          />
+        )}
+        
+      />
+      
       )}
     </SafeAreaView>
   );
@@ -597,16 +659,15 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 25,
     borderBottomRightRadius: 25,
   },
-  headerContent: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    zIndex: 1,
-  },
   headerTitleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    flex: 1,
+  },
+  headerBottomRow: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   headerIcon: {
     width: 50,
@@ -628,6 +689,9 @@ const styles = StyleSheet.create({
     color: '#C8E6C9',
     fontWeight: '500',
   },
+  headerContent: {
+    paddingTop: 8,
+  },
   dateButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -640,6 +704,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 4,
+  
+    maxWidth: '60%',   // keeps the pill compact on small screens
+    flexShrink: 1,
+    overflow: 'hidden',
   },
   dateButtonText: { 
     color: '#2E7D32', 
@@ -877,7 +945,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#C8E6C9',
     marginTop: 40,
     borderRadius: 2,
-    transformOrigin: 'top',
+  
   },
   card: {
     flex: 1,

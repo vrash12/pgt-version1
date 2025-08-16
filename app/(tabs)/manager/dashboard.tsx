@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------
  * MANAGER ▸ DASHBOARD  (analytics-first version)
- * Header styled to match the Commuter dashboard
+ * Header styled to match the Commuter dashboard (with floating blobs)
  * -----------------------------------------------------------------*/
 import {
   FontAwesome5,
@@ -11,10 +11,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import dayjs from "dayjs";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -67,7 +68,7 @@ export default function ManagerDashboard() {
 
   /* fetch metrics every 20 s */
   useEffect(() => {
-    let timer: NodeJS.Timeout;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
     async function fetchMetrics() {
       try {
@@ -114,7 +115,13 @@ export default function ManagerDashboard() {
     }
 
     fetchMetrics();
-    return () => clearTimeout(timer);
+
+    return () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
   }, []);
 
   /* logout helper */
@@ -131,6 +138,25 @@ export default function ManagerDashboard() {
       },
     ]);
 
+  /* ✨ Animated header bubbles (match Commuter/PAO) */
+  const bubble1 = useRef(new Animated.Value(0)).current;
+  const bubble2 = useRef(new Animated.Value(0)).current;
+  const bubble3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const float = (v: Animated.Value, delay = 0, duration = 7000) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(v, { toValue: 1, duration, delay, useNativeDriver: true }),
+          Animated.timing(v, { toValue: 0, duration,       useNativeDriver: true }),
+        ])
+      ).start();
+
+    float(bubble1, 0,    6500);
+    float(bubble2, 2200, 7600);
+    float(bubble3, 4000, 8200);
+  }, [bubble1, bubble2, bubble3]);
+
   /* ────────────────────────── UI ─────────────────────────────── */
   return (
     <SafeAreaView style={st.container}>
@@ -138,6 +164,47 @@ export default function ManagerDashboard() {
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* HEADER (imitates Commuter header) */}
         <LinearGradient colors={["#2E7D32", "#1B5E20", "#0D4F12"]} style={st.header}>
+          {/* Animated blobs behind content */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              st.blob1,
+              {
+                transform: [
+                  { translateY: bubble1.interpolate({ inputRange: [0, 1], outputRange: [0, -12] }) },
+                  { translateX: bubble1.interpolate({ inputRange: [0, 1], outputRange: [0,  14] }) },
+                  { scale:      bubble1.interpolate({ inputRange: [0, .5, 1], outputRange: [1, 1.06, 1] }) },
+                ],
+              },
+            ]}
+          />
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              st.blob2,
+              {
+                transform: [
+                  { translateY: bubble2.interpolate({ inputRange: [0, 1], outputRange: [0, 10] }) },
+                  { translateX: bubble2.interpolate({ inputRange: [0, 1], outputRange: [0, -18] }) },
+                  { scale:      bubble2.interpolate({ inputRange: [0, .5, 1], outputRange: [1, 1.05, 1] }) },
+                ],
+              },
+            ]}
+          />
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              st.blob3,
+              {
+                transform: [
+                  { translateY: bubble3.interpolate({ inputRange: [0, 1], outputRange: [0, -8] }) },
+                  { translateX: bubble3.interpolate({ inputRange: [0, 1], outputRange: [0, 10] }) },
+                  { scale:      bubble3.interpolate({ inputRange: [0, .5, 1], outputRange: [1, 1.04, 1] }) },
+                ],
+              },
+            ]}
+          />
+
           <View style={st.topRow}>
             {/* profile bubble + greeting */}
             <View style={st.profileRow}>
@@ -233,13 +300,16 @@ function KpiCard({
 const st = StyleSheet.create<{
   container:   ViewStyle;
   header:      ViewStyle;
+  blob1:       ViewStyle;
+  blob2:       ViewStyle;
+  blob3:       ViewStyle;
   topRow:      ViewStyle;
   profileRow:  ViewStyle;
   avatar:      ViewStyle;
   welcome:     ViewStyle;
   greet:       TextStyle;
   user:        TextStyle;
-  onlineRow:   ViewStyle;   // left in case you want to re-add live clock under name later
+  onlineRow:   ViewStyle;
   dot:         ViewStyle;
   onlineTxt:   TextStyle;
   logoutBtn:   ViewStyle;
@@ -258,12 +328,22 @@ const st = StyleSheet.create<{
 }>({
   container: { flex: 1, backgroundColor: "#f8f9fa" },
 
-  /* header — mirrors Commuter header */
+  /* header — mirrors Commuter header; allow bubbles to flow inside */
   header: {
     paddingTop: 20,
-    paddingBottom: 40,
+    paddingBottom: 56,
     paddingHorizontal: 20,
+    position: "relative",
+    overflow: "hidden",
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
   },
+
+  // animated blobs (same palette/opacities as other screens)
+  blob1: { position: "absolute", width: 120, height: 120, borderRadius: 60, top: -40, right: -30, backgroundColor: "rgba(255,255,255,0.15)" },
+  blob2: { position: "absolute", width:  80, height:  80, borderRadius: 40, top:  40, left:  -20, backgroundColor: "rgba(255,255,255,0.10)" },
+  blob3: { position: "absolute", width:  50, height:  50, borderRadius: 25, bottom: -10, right:  60, backgroundColor: "rgba(255,255,255,0.08)" },
+
   topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   profileRow: { flexDirection: "row", alignItems: "center" },
   avatar: {
@@ -273,11 +353,11 @@ const st = StyleSheet.create<{
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 3,
-    borderColor: "rgba(255,255,255,0.3)", // ring like the commuter header
+    borderColor: "rgba(255,255,255,0.3)",
   },
   welcome: { marginLeft: 16 },
   greet: { color: "#E8F5E8", fontSize: 15, opacity: 0.9 },
-  user: { color: "#fff", fontSize: 22, fontWeight: "700", marginTop: 2 },
+  user:  { color: "#fff",   fontSize: 22, fontWeight: "700", marginTop: 2 },
 
   // (Optional clock row placeholders if you want to add like PAO’s online row later)
   onlineRow: { flexDirection: "row", alignItems: "center", marginTop: 4, display: "none" },
@@ -292,10 +372,15 @@ const st = StyleSheet.create<{
     backgroundColor: "#fff",
     borderTopLeftRadius: 32,
     borderTopRightRadius: 32,
-    marginTop: -20,
+    marginTop: 12,
     paddingTop: 32,
     paddingHorizontal: 20,
     paddingBottom: 30,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 6,
   },
 
   /* KPI strip */

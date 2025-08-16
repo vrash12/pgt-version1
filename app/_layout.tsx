@@ -1,87 +1,97 @@
-// app/_layout.tsx
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Slot, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { jwtDecode } from 'jwt-decode';
 import React, { useEffect, useState } from 'react';
+import { View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-/* Keep the native splash visible while we bootstrap */
+import AnnouncementNotifier from './AnnouncementNotifier';
+
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
-/* ─── types ───────────────────────────────────────────────────────── */
 type AppRole = 'commuter' | 'pao' | 'manager';
-interface JwtPayload { role: AppRole; exp: number }
-
-/* helper for TS */
-const seg = (segments: readonly string[] | readonly unknown[]) => segments as string[];
+type JwtPayload = { role: AppRole; exp: number };
 
 export default function RootLayout() {
-  const router   = useRouter();
+  const router = useRouter();
   const segments = useSegments();
   const [isReady, setIsReady] = useState(false);
+  const [role, setRole] = useState<AppRole | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
       try {
         const token = await AsyncStorage.getItem('@token');
 
-        // No token → allow auth routes, otherwise send to /signin
+        // No token: allow being on auth routes, otherwise send to /signin
         if (!token) {
-          if (seg(segments).includes('signin') || seg(segments).includes('signup')) {
-            if (!cancelled) setIsReady(true);
-          } else {
-            router.replace('/signin');
-            if (!cancelled) setIsReady(true);
+          const s = (segments as string[]) || [];
+          if (!s.includes('signin') && !s.includes('signup')) router.replace('/signin');
+          if (!cancelled) {
+            setRole(null);
+            setIsReady(true);
           }
           return;
         }
 
-        // Has token → decode and route to role root if needed
+        // Decode/validate
         let payload: JwtPayload | null = null;
         try {
           payload = jwtDecode<JwtPayload>(token);
         } catch {
           await AsyncStorage.clear();
           router.replace('/signin');
-          if (!cancelled) setIsReady(true);
+          if (!cancelled) {
+            setRole(null);
+            setIsReady(true);
+          }
           return;
         }
 
-        const role = payload.role;
-        if (seg(segments).includes(role)) {
-          if (!cancelled) setIsReady(true);
-        } else {
-          router.replace({ pathname: `/${role}` });
-          if (!cancelled) setIsReady(true);
+        const now = Math.floor(Date.now() / 1000);
+        if (!payload.exp || payload.exp <= now) {
+          await AsyncStorage.clear();
+          router.replace('/signin');
+          if (!cancelled) {
+            setRole(null);
+            setIsReady(true);
+          }
+          return;
         }
-      } catch {
-        // On any unexpected error, fail safe to signin
-        router.replace('/signin');
+
+        // Valid → go to role root if not already there
+        setRole(payload.role);
+        const s = (segments as string[]) || [];
+        if (!s.includes(payload.role)) router.replace(`/${payload.role}`);
         if (!cancelled) setIsReady(true);
+      } catch {
+        router.replace('/signin');
+        if (!cancelled) {
+          setRole(null);
+          setIsReady(true);
+        }
       }
     })();
-
     return () => { cancelled = true; };
   }, [segments, router]);
 
-  // Hide the native splash as soon as we are ready to render
   useEffect(() => {
-    if (isReady) {
-      SplashScreen.hideAsync().catch(() => {});
-    }
+    if (isReady) SplashScreen.hideAsync().catch(() => {});
   }, [isReady]);
 
-  // While not ready, render nothing — the native splash stays visible
   if (!isReady) return null;
 
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" translucent={false} backgroundColor="transparent" />
-      <Slot />
+      <StatusBar style="dark" />
+      {/* Wrap Slot in a View for background styling (Fragments themselves can't take style) */}
+      <View style={{ flex: 1, backgroundColor: '#fff' }}>
+        {role === 'commuter' && <AnnouncementNotifier />}
+        <Slot />
+      </View>
     </SafeAreaProvider>
   );
 }

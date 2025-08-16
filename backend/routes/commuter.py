@@ -13,12 +13,27 @@ from models.bus import Bus
 from models.user import User
 from utils.qr import build_qr_payload
 from models.ticket_stop import TicketStop
-from models.ticket_stop import TicketStop
 from sqlalchemy.orm import joinedload
 from flask import send_from_directory, redirect
-
+from models.device_token import DeviceToken
 
 commuter_bp = Blueprint("commuter", __name__, url_prefix="/commuter")
+
+
+
+@commuter_bp.route("/device-token", methods=["POST"])
+@require_role("commuter")
+def save_device_token():
+    data = request.get_json(silent=True) or {}
+    tok = (data.get("token") or "").strip()
+    if not tok:
+        return jsonify(error="token required"), 400
+    exists = DeviceToken.query.filter_by(user_id=g.user.id, token=tok).first()
+    if not exists:
+        db.session.add(DeviceToken(user_id=g.user.id, token=tok))
+        db.session.commit()
+        return jsonify(success=True, created=True), 201
+    return jsonify(success=True, created=False), 200
 
 
 @commuter_bp.route("/qr/ticket/<int:ticket_id>.jpg", methods=["GET"])
@@ -100,7 +115,20 @@ def commuter_get_ticket(ticket_id: int):
 @commuter_bp.route("/dashboard", methods=["GET"])
 @require_role("commuter")
 def dashboard():
+    """
+    Compact, single-hop dashboard payload for the commuter app.
+    Includes a tiny "mini_schedules" teaser per bus (max 2 trips each).
+    """
     from datetime import date as _date
+    from sqlalchemy import case
+
+    def _choose_greeting() -> str:
+        hr = datetime.utcnow().hour
+        if hr < 12:
+            return "Good morning"
+        elif hr < 18:
+            return "Good afternoon"
+        return "Good evening"
 
     now = datetime.utcnow()
     today = now.date()
@@ -114,7 +142,7 @@ def dashboard():
         .first()
     )
 
-    # ── recent tickets (last 7 days)
+    # ── recent tickets (last 7 days for this user)
     seven_days_ago = now - timedelta(days=7)
     recent_tix = (
         TicketSale.query.filter(
@@ -126,18 +154,28 @@ def dashboard():
     # ── unread messages (simple total for now)
     unread_msgs = Announcement.query.count()
 
-    # ── active buses seen in last 5 minutes
+    # ── active buses (seen within last 5 minutes, ignore future-dated rows)
+    cutoff = datetime.utcnow() - timedelta(minutes=5)
+    now_utc = datetime.utcnow()
+    last_per_bus = (
+        db.session.query(
+            SensorReading.bus_id,
+            func.max(SensorReading.timestamp).label("last_ts"),
+        )
+        .group_by(SensorReading.bus_id)
+        .subquery()
+    )
     active_buses = (
-        db.session.query(SensorReading.bus_id)
-        .filter(SensorReading.timestamp >= now - timedelta(minutes=5))
-        .distinct()
-        .count()
+        db.session.query(func.count(last_per_bus.c.bus_id))
+        .filter(last_per_bus.c.last_ts >= cutoff)
+        .filter(last_per_bus.c.last_ts <= now_utc)
+        .scalar()
     )
 
     # ── all trips today (how many scheduled)
     today_trips = Trip.query.filter(Trip.service_date == today).count()
 
-    # ── commuter’s tickets today
+    # ── commuter’s tickets & revenue today
     today_tickets = (
         TicketSale.query.filter(
             TicketSale.user_id == g.user.id,
@@ -194,7 +232,7 @@ def dashboard():
             "bus_identifier": bid or "unassigned",
         }
 
-    # ── upcoming trips (next 2 from now)
+    # ── upcoming trips (next 2 from now, across all buses)
     upcoming_rows = (
         db.session.query(Trip, Bus.identifier.label("bus_identifier"))
         .join(Bus, Trip.bus_id == Bus.id)
@@ -226,6 +264,154 @@ def dashboard():
     else:
         next_trip = None
 
+    # ───────────────────────────────────────────────────────────────────
+    # Mini schedules (per bus): at most 2 nearest trips per bus for today
+    # Upcoming-first, then earliest; includes endpoints when available
+    # ───────────────────────────────────────────────────────────────────
+    limit_per_bus = 2
+    now_time = now.time()
+
+    # First/last stop names per trip (endpoints)
+    first_stop_sq = (
+        db.session.query(StopTime.trip_id, func.min(StopTime.seq).label("min_seq"))
+        .group_by(StopTime.trip_id)
+        .subquery()
+    )
+    first_name_sq = (
+        db.session.query(StopTime.trip_id, StopTime.stop_name.label("origin"))
+        .join(
+            first_stop_sq,
+            (StopTime.trip_id == first_stop_sq.c.trip_id)
+            & (StopTime.seq == first_stop_sq.c.min_seq),
+        )
+        .subquery()
+    )
+    last_stop_sq = (
+        db.session.query(StopTime.trip_id, func.max(StopTime.seq).label("max_seq"))
+        .group_by(StopTime.trip_id)
+        .subquery()
+    )
+    last_name_sq = (
+        db.session.query(StopTime.trip_id, StopTime.stop_name.label("destination"))
+        .join(
+            last_stop_sq,
+            (StopTime.trip_id == last_stop_sq.c.trip_id)
+            & (StopTime.seq == last_stop_sq.c.max_seq),
+        )
+        .subquery()
+    )
+
+    mini_schedules = []
+
+    try:
+        # Prefer single SQL with ROW_NUMBER per bus (requires MySQL 8+/Postgres)
+        past_flag = case((Trip.start_time < now_time, 1), else_=0)
+        rn = func.row_number().over(
+            partition_by=Trip.bus_id,
+            order_by=(past_flag.asc(), Trip.start_time.asc()),
+        ).label("rn")
+
+        base = (
+            db.session.query(
+                Bus.identifier.label("bus_identifier"),
+                Trip.start_time.label("start_time"),
+                Trip.end_time.label("end_time"),
+                first_name_sq.c.origin,
+                last_name_sq.c.destination,
+                rn,
+            )
+            .join(Trip, Trip.bus_id == Bus.id)
+            .outerjoin(first_name_sq, Trip.id == first_name_sq.c.trip_id)
+            .outerjoin(last_name_sq, Trip.id == last_name_sq.c.trip_id)
+            .filter(Trip.service_date == today)
+        ).subquery()
+
+        rows = (
+            db.session.query(
+                base.c.bus_identifier,
+                base.c.start_time,
+                base.c.end_time,
+                base.c.origin,
+                base.c.destination,
+            )
+            .filter(base.c.rn <= limit_per_bus)
+            .order_by(base.c.bus_identifier.asc(), base.c.start_time.asc())
+            .all()
+        )
+
+        grouped: dict[str, list[dict]] = {}
+        for r in rows:
+            grouped.setdefault(r.bus_identifier, []).append(
+                {
+                    "start": r.start_time.strftime("%H:%M"),
+                    "end": r.end_time.strftime("%H:%M"),
+                    "origin": (r.origin or ""),
+                    "destination": (r.destination or ""),
+                }
+            )
+
+        for bid, items in grouped.items():
+            mini_schedules.append(
+                {"bus": bid.replace("bus-", "Bus "), "items": items[:limit_per_bus]}
+            )
+
+    except Exception:
+        # Fallback (no window functions): do it in Python
+        from collections import defaultdict
+
+        trips = (
+            db.session.query(Trip, Bus.identifier.label("bus_identifier"))
+            .join(Bus, Trip.bus_id == Bus.id)
+            .filter(Trip.service_date == today)
+            .order_by(Trip.start_time.asc())
+            .all()
+        )
+
+        # Cache endpoints for each trip to avoid N+1 queries
+        endpoints: dict[int, tuple[str, str]] = {}
+        for t, _bid in trips:
+            fst = (
+                db.session.query(StopTime)
+                .filter_by(trip_id=t.id)
+                .order_by(StopTime.seq.asc(), StopTime.id.asc())
+                .first()
+            )
+            lst = (
+                db.session.query(StopTime)
+                .filter_by(trip_id=t.id)
+                .order_by(StopTime.seq.desc(), StopTime.id.desc())
+                .first()
+            )
+            endpoints[t.id] = (
+                (fst.stop_name if fst else ""),
+                (lst.stop_name if lst else ""),
+            )
+
+        per_bus: dict[str, list[Trip]] = defaultdict(list)
+        for t, bid in trips:
+            per_bus[bid].append(t)
+
+        def sort_key(t: Trip):
+            # Upcoming first (start_time >= now), then earliest start_time
+            return (0 if t.start_time >= now_time else 1, t.start_time)
+
+        for bid, ts in per_bus.items():
+            ts_sorted = sorted(ts, key=sort_key)[:limit_per_bus]
+            mini_schedules.append(
+                {
+                    "bus": bid.replace("bus-", "Bus "),
+                    "items": [
+                        {
+                            "start": t.start_time.strftime("%H:%M"),
+                            "end": t.end_time.strftime("%H:%M"),
+                            "origin": endpoints[t.id][0],
+                            "destination": endpoints[t.id][1],
+                        }
+                        for t in ts_sorted
+                    ],
+                }
+            )
+
     return jsonify(
         {
             "greeting": _choose_greeting(),
@@ -233,15 +419,14 @@ def dashboard():
             "next_trip": next_trip,
             "recent_tickets": recent_tix,
             "unread_messages": unread_msgs,
-
-            # NEW fields
-            "active_buses": active_buses,
-            "today_trips": today_trips,
-            "today_tickets": today_tickets,
+            "active_buses": int(active_buses or 0),
+            "today_trips": int(today_trips or 0),
+            "today_tickets": int(today_tickets or 0),
             "today_revenue": round(float(today_revenue), 2),
             "last_ticket": last_ticket,
             "last_announcement": last_announcement,
             "upcoming": upcoming,
+            "mini_schedules": mini_schedules,
         }
     ), 200
 
@@ -413,89 +598,123 @@ def vehicle_location():
         200,
     )
 
-
 @commuter_bp.route("/tickets/mine", methods=["GET"])
 @require_role("commuter")
 def my_receipts():
-    days = request.args.get("days")
-    current_app.logger.debug(
-        f"[Commuter:tickets/mine] ENTER user={g.user.id!r} days={days!r}"
+    """
+    GET /commuter/tickets/mine
+      Query params:
+        page=1
+        page_size=5
+        date=YYYY-MM-DD       # exact calendar day
+        days=7|30             # fallback range if 'date' not provided
+        bus_id=<int>          # filter tickets by bus (via Trip.bus_id)
+        light=1               # keep for compatibility
+    """
+    from datetime import date as _date
+
+    # ── params
+    page      = max(1, request.args.get("page", type=int, default=1))
+    page_size = max(1, request.args.get("page_size", type=int, default=5))
+    date_str  = request.args.get("date")
+    days      = request.args.get("days")
+    bus_id    = request.args.get("bus_id", type=int)
+    light     = (request.args.get("light") or "").lower() in {"1", "true", "yes"}
+
+    # ── base query: eager-load to avoid N+1s
+    qs = (
+        db.session.query(TicketSale)
+        .options(
+            joinedload(TicketSale.user),
+            joinedload(TicketSale.origin_stop_time),
+            joinedload(TicketSale.destination_stop_time),
+        )
+        .filter(TicketSale.user_id == g.user.id)
     )
-    try:
-        qs = TicketSale.query.filter_by(user_id=g.user.id)
-        current_app.logger.debug("  → Base query constructed")
-        if days in {"7", "30"}:
-            cutoff = datetime.utcnow() - timedelta(days=int(days))
-            qs = qs.filter(TicketSale.created_at >= cutoff)
-            current_app.logger.debug(
-                f"  → Applied date filter: created_at >= {cutoff.isoformat()}"
-            )
 
-        tickets = qs.order_by(TicketSale.created_at.desc()).all()
-        current_app.logger.debug(f"  → Retrieved {len(tickets)} tickets from DB")
+    # ── date filter (exact day)
+    if date_str:
+        try:
+            day = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify(error="date must be YYYY-MM-DD"), 400
+        # Use DB's DATE() to avoid timezone mismatch headaches
+        qs = qs.filter(func.date(TicketSale.created_at) == day)
+    elif days in {"7", "30"}:
+        cutoff = datetime.utcnow() - timedelta(days=int(days))
+        qs = qs.filter(TicketSale.created_at >= cutoff)
 
-        out = []
-        for t in tickets:
-            # compute QR asset & payload (unchanged)
-            if t.passenger_type == "discount":
-                base = round(float(t.price) / 0.8) if t.price else 0
-                disc = True
-            else:
-                base = int(t.price)
-                disc = False
+    # ── bus filter (via Trip.bus_id). If your TicketSale has bus_id, use that; else join Trip.
+    if bus_id:
+        if hasattr(TicketSale, "bus_id"):
+            qs = qs.filter(TicketSale.bus_id == bus_id)
+        else:
+            qs = qs.join(Trip, TicketSale.trip_id == Trip.id).filter(Trip.bus_id == bus_id)
 
-            prefix = "discount" if disc else "regular"
-            filename = f"{prefix}_{base}.jpg"
-            qr_url = url_for("static", filename=f"qr/{filename}", _external=True)
-            payload = build_qr_payload(t)
+    total = qs.count()
 
-            # ↓↓↓ FIX: derive names from StopTime OR fall back to TicketStop by ID ↓↓↓
-            if t.origin_stop_time:
-                origin_name = t.origin_stop_time.stop_name
-            else:
-                ts = TicketStop.query.get(getattr(t, "origin_stop_time_id", None))
-                origin_name = ts.stop_name if ts else ""
+    rows = (
+        qs.order_by(TicketSale.created_at.desc())
+          .offset((page - 1) * page_size)
+          .limit(page_size)
+          .all()
+    )
 
-            if t.destination_stop_time:
-                destination_name = t.destination_stop_time.stop_name
-            else:
-                tsd = TicketStop.query.get(getattr(t, "destination_stop_time_id", None))
-                destination_name = tsd.stop_name if tsd else ""
-            # ↑↑↑ FIX END ↑↑↑
-            current_app.logger.debug(
-                "[Commuter:tickets/mine] Row %s → o_id=%s d_id=%s | origin=%r dest=%r",
-                t.id, getattr(t, "origin_stop_time_id", None), getattr(t, "destination_stop_time_id", None),
-                origin_name, destination_name
-            )
-            payload = build_qr_payload(
-                t,
-                origin_name=origin_name,
-                destination_name=destination_name,
-            )
-            qr_link = url_for("commuter.qr_image_for_ticket", ticket_id=t.id, _external=True)
+    items = []
+    for t in rows:
+        # choose QR asset
+        if t.passenger_type == "discount":
+            base = round(float(t.price) / 0.8) if t.price else 0
+            prefix = "discount"
+        else:
+            base = int(t.price)
+            prefix = "regular"
+        filename = f"{prefix}_{base}.jpg"
+        qr_url = url_for("static", filename=f"qr/{filename}", _external=True)
 
-            out.append(
-                {
-                    "id": t.id,
-                    "referenceNo": t.reference_no,
-                    "date": t.created_at.strftime("%B %d, %Y"),
-                    "time": t.created_at.strftime("%I:%M %p").lstrip("0").lower(),
-                    "origin": origin_name,                 # ← now populated
-                    "destination": destination_name,       # ← now populated
-                    "passengerType": t.passenger_type.title(),
-                    "commuter": f"{t.user.first_name} {t.user.last_name}",
-                    "fare": f"{float(t.price):.2f}",
-                    "paid": bool(t.paid),
-                    "qr_url": qr_url,
-                    "qr": payload,          # was: str(t.ticket_uuid)
-                    "qr_link": qr_link,
-                }
-            )
+        # resolve stop names
+        if t.origin_stop_time:
+            origin_name = t.origin_stop_time.stop_name
+        else:
+            ts = TicketStop.query.get(getattr(t, "origin_stop_time_id", None))
+            origin_name = ts.stop_name if ts else ""
 
-        return jsonify(out), 200
-    except Exception as e:
-        current_app.logger.exception("[Commuter:tickets/mine] ERROR generating receipts")
-        return jsonify(error=str(e)), 500
+        if t.destination_stop_time:
+            destination_name = t.destination_stop_time.stop_name
+        else:
+            tsd = TicketStop.query.get(getattr(t, "destination_stop_time_id", None))
+            destination_name = tsd.stop_name if tsd else ""
+
+        payload = build_qr_payload(
+            t,
+            origin_name=origin_name,
+            destination_name=destination_name,
+        )
+        qr_link = url_for("commuter.qr_image_for_ticket", ticket_id=t.id, _external=True)
+
+        items.append({
+            "id": t.id,
+            "referenceNo": t.reference_no,
+            "date": t.created_at.strftime("%B %d, %Y"),
+            "time": t.created_at.strftime("%I:%M %p").lstrip("0").lower(),
+            "origin": origin_name,
+            "destination": destination_name,
+            "passengerType": t.passenger_type.title(),
+            "commuter": f"{t.user.first_name} {t.user.last_name}",
+            "fare": f"{float(t.price):.2f}",
+            "paid": bool(t.paid),
+            "qr_url": qr_url,
+            "qr": payload if not light else payload,  # keep field for app compatibility
+            "qr_link": qr_link,
+        })
+
+    return jsonify(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        has_more=(page * page_size) < total,
+    ), 200
 
 
 @commuter_bp.route("/trips/<int:trip_id>", methods=["GET"])
@@ -597,10 +816,9 @@ def schedule():
             )
     return jsonify(events=events), 200
 
-
 @commuter_bp.route("/announcements", methods=["GET"])
 def announcements():
-    bus_id = request.args.get("bus_id", type=int)
+    bus_id   = request.args.get("bus_id", type=int)
     date_str = request.args.get("date")
 
     query = (
@@ -616,7 +834,11 @@ def announcements():
     if bus_id:
         query = query.filter(User.assigned_bus_id == bus_id)
 
-    if date_str:
+    # ⬇️ default to *today* when client doesn't pass ?date=
+    if not date_str:
+        day = datetime.utcnow().date()
+        query = query.filter(func.date(Announcement.timestamp) == day)
+    else:
         try:
             day = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:

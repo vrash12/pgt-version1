@@ -2,10 +2,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Stack, useRouter } from 'expo-router';
 import { jwtDecode } from 'jwt-decode';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
-  Dimensions,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -16,10 +15,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_BASE_URL } from './config';
-
-const { width } = Dimensions.get('window');
 
 export default function SignInScreenWrapper() {
   return (
@@ -33,6 +30,7 @@ export default function SignInScreenWrapper() {
 
 function SignInScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const [username, setUsername]   = useState('');
   const [password, setPassword]   = useState('');
@@ -61,9 +59,9 @@ function SignInScreen() {
 
     float(bubble1);
     float(bubble2, 3500);
-  }, []);
+  }, [bubble1, bubble2, fadeAnim, slideAnim]);
 
-  const handleSignIn = async () => {
+  const handleSignIn = useCallback(async () => {
     await AsyncStorage.multiRemove([
       '@token','@role','@userId','@firstName','@lastName','@assignedBusId',
     ]);
@@ -80,7 +78,7 @@ function SignInScreen() {
     ]).start();
 
     try {
-      const res = await fetch(`${API_BASE_URL}/auth/login`, {
+      const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -101,7 +99,12 @@ function SignInScreen() {
         if (json.busId != null)   pairs.push(['@assignedBusId', String(json.busId)]);
         await AsyncStorage.multiSet(pairs);
 
-        router.replace(`/${decoded.role.toLowerCase()}`);
+        switch ((decoded.role || '').toLowerCase()) {
+          case 'commuter': router.replace('/commuter'); break;
+          case 'pao':      router.replace('/pao');      break;
+          case 'manager':  router.replace('/manager');  break;
+          default:         router.replace('/signin');
+        }
       } else {
         alert(json.error || 'Invalid credentials');
       }
@@ -111,130 +114,136 @@ function SignInScreen() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [username, password, buttonScale, router]);
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* HEADER */}
-      <View style={styles.header}>
-        <View style={styles.headerOverlay} />
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: '#f8faf8' }}
+      behavior={Platform.OS === 'ios' ? 'height' : undefined} // Android uses adjustResize
+      keyboardVerticalOffset={0}
+    >
+      <SafeAreaView style={styles.container} edges={['top']}>
+        {/* HEADER */}
+        <View style={[styles.header, { paddingTop: insets.top + 30 }]}>
+          <View style={styles.headerOverlay} />
 
-        <Animated.View
-          style={[
-            styles.headerContent,
-            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
-          ]}
-        >
-          <View style={styles.welcomeContainer}>
-            <Text style={styles.subtitle}>Welcome Back!</Text>
-            <Text style={styles.title}>Sign In</Text>
-            <View style={styles.titleUnderline} />
-          </View>
-        </Animated.View>
-
-        <Animated.View
-          style={[
-            styles.bubble, styles.bubble1Pos,
-            {
-              transform: [
-                { translateY: bubble1.interpolate({ inputRange: [0,1], outputRange: [0,-12] }) },
-                { translateX: bubble1.interpolate({ inputRange: [0,1], outputRange: [0,14] }) },
-                { scale: bubble1.interpolate({ inputRange: [0,0.5,1], outputRange: [1,1.08,1] }) },
-              ],
-            },
-          ]}
-        />
-        <Animated.View
-          style={[
-            styles.bubble, styles.bubble2Pos,
-            {
-              transform: [
-                { translateY: bubble2.interpolate({ inputRange: [0,1], outputRange: [0,10] }) },
-                { translateX: bubble2.interpolate({ inputRange: [0,1], outputRange: [0,-16] }) },
-                { scale: bubble2.interpolate({ inputRange: [0,0.5,1], outputRange: [1,1.05,1] }) },
-              ],
-            },
-          ]}
-        />
-      </View>
-
-      {/* FORM */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.formContainer}
-      >
-        <Animated.View style={[styles.formInner, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          {/* USERNAME */}
-          <View style={styles.field}>
-            <Text style={styles.label}>Username</Text>
-            <View style={[styles.inputContainer, focusedInput === 'username' && styles.inputContainerFocused]}>
-              <View style={styles.inputIcon}>
-                <View style={styles.userIcon} />
-              </View>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter your username"
-                placeholderTextColor="#6b7c6b"
-                value={username}
-                onChangeText={setUsername}
-                onFocus={() => setFocusedInput('username')}
-                onBlur={() => setFocusedInput(null)}
-                autoCapitalize="none"
-              />
+          <Animated.View
+            style={[
+              styles.headerContent,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+            ]}
+          >
+            <View style={styles.welcomeContainer}>
+              <Text style={styles.title}>Sign In</Text>
+              <View style={styles.titleUnderline} />
             </View>
-          </View>
-
-          {/* PASSWORD */}
-          <View style={styles.field}>
-            <Text style={styles.label}>Password</Text>
-            <View style={[styles.inputContainer, focusedInput === 'password' && styles.inputContainerFocused]}>
-              <View style={styles.inputIcon}>
-                <View style={styles.lockIcon} />
-              </View>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter your password"
-                placeholderTextColor="#6b7c6b"
-                value={password}
-                onChangeText={setPassword}
-                onFocus={() => setFocusedInput('password')}
-                onBlur={() => setFocusedInput(null)}
-                secureTextEntry
-              />
-            </View>
-          </View>
-
-          {/* SIGN-IN BUTTON */}
-          <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
-            <TouchableOpacity
-              style={[styles.button, isLoading && styles.buttonDisabled]}
-              onPress={handleSignIn}
-              disabled={isLoading}
-            >
-              <View style={styles.buttonContent}>
-                {isLoading ? (
-                  <View style={styles.loadingContainer}>
-                    <View style={styles.loadingDot} />
-                    <View style={[styles.loadingDot, styles.loadingDot2]} />
-                    <View style={[styles.loadingDot, styles.loadingDot3]} />
-                  </View>
-                ) : (
-                  <Text style={styles.buttonText}>Sign In</Text>
-                )}
-              </View>
-              <View style={styles.buttonGlow} />
-            </TouchableOpacity>
           </Animated.View>
 
-          {/* FOOTER LINK */}
-          <Pressable onPress={() => router.push('/signup')} style={styles.footerLink}>
-            <Text style={styles.footerText}>
-              Don't have an account? <Text style={styles.linkText}>Sign Up</Text>
-            </Text>
-          </Pressable>
-        </Animated.View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+          <Animated.View
+            style={[
+              styles.bubble, styles.bubble1Pos,
+              {
+                transform: [
+                  { translateY: bubble1.interpolate({ inputRange: [0,1], outputRange: [0,-12] }) },
+                  { translateX: bubble1.interpolate({ inputRange: [0,1], outputRange: [0,14] }) },
+                  { scale: bubble1.interpolate({ inputRange: [0,0.5,1], outputRange: [1,1.08,1] }) },
+                ],
+              },
+            ]}
+          />
+          <Animated.View
+            style={[
+              styles.bubble, styles.bubble2Pos,
+              {
+                transform: [
+                  { translateY: bubble2.interpolate({ inputRange: [0,1], outputRange: [0,10] }) },
+                  { translateX: bubble2.interpolate({ inputRange: [0,1], outputRange: [0,-16] }) },
+                  { scale: bubble2.interpolate({ inputRange: [0,0.5,1], outputRange: [1,1.05,1] }) },
+                ],
+              },
+            ]}
+          />
+        </View>
+
+        {/* FORM — centered vertically; no ScrollView needed */}
+        <View style={styles.formWrap}>
+          <Animated.View style={[styles.formInner, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+            {/* USERNAME */}
+            <View style={styles.field}>
+              <Text style={styles.label}>Username</Text>
+              <View style={[styles.inputContainer, focusedInput === 'username' && styles.inputContainerFocused]}>
+                <View style={styles.inputIcon}>
+                  <View style={styles.userIcon} />
+                </View>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter your username"
+                  placeholderTextColor="#6b7c6b"
+                  value={username}
+                  onChangeText={setUsername}
+                  onFocus={() => setFocusedInput('username')}
+                  onBlur={() => setFocusedInput(null)}
+                  autoCapitalize="none"
+                  returnKeyType="next"
+                  blurOnSubmit={false}
+                />
+              </View>
+            </View>
+
+            {/* PASSWORD */}
+            <View style={styles.field}>
+              <Text style={styles.label}>Password</Text>
+              <View style={[styles.inputContainer, focusedInput === 'password' && styles.inputContainerFocused]}>
+                <View style={styles.inputIcon}>
+                  <View style={styles.lockIcon} />
+                </View>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter your password"
+                  placeholderTextColor="#6b7c6b"
+                  value={password}
+                  onChangeText={setPassword}
+                  onFocus={() => setFocusedInput('password')}
+                  onBlur={() => setFocusedInput(null)}
+                  secureTextEntry
+                  returnKeyType="done"
+                  onSubmitEditing={handleSignIn}
+                />
+              </View>
+            </View>
+
+            {/* SIGN-IN BUTTON */}
+            <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
+              <TouchableOpacity
+                style={[styles.button, isLoading && styles.buttonDisabled]}
+                onPress={handleSignIn}
+                disabled={isLoading}
+              >
+                <View style={styles.buttonContent}>
+                  {isLoading ? (
+                    <View style={styles.loadingContainer}>
+                      <View style={styles.loadingDot} />
+                      <View style={[styles.loadingDot, styles.loadingDot2]} />
+                      <View style={[styles.loadingDot, styles.loadingDot3]} />
+                    </View>
+                  ) : (
+                    <Text style={styles.buttonText}>Sign In</Text>
+                  )}
+                </View>
+                <View style={styles.buttonGlow} />
+              </TouchableOpacity>
+            </Animated.View>
+
+            {/* FOOTER LINK */}
+            <Pressable onPress={() => router.push('/signup')} style={styles.footerLink}>
+              <Text style={styles.footerText}>
+                Don't have an account? <Text style={styles.linkText}>Sign Up</Text>
+              </Text>
+            </Pressable>
+          </Animated.View>
+        </View>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -246,7 +255,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#264d00',
     paddingBottom: 50,
     paddingHorizontal: 20,
-    paddingTop: 30,
     borderBottomRightRadius: 90,
     borderBottomLeftRadius: 20,
     position: 'relative',
@@ -263,7 +271,6 @@ const styles = StyleSheet.create({
   },
   headerContent: { zIndex: 2 },
   welcomeContainer: { marginTop: 20 },
-  subtitle: { color: '#b8d4b8', fontSize: 18, fontWeight: '300', letterSpacing: 0.5 },
   title: { color: '#fff', fontSize: 38, fontWeight: 'bold', marginTop: 8, letterSpacing: 1 },
   titleUnderline: { width: 60, height: 4, backgroundColor: '#4a7c4a', marginTop: 12, borderRadius: 2 },
 
@@ -279,8 +286,13 @@ const styles = StyleSheet.create({
   bubble2Pos: { bottom: -10, right: 30 },
 
   /* form */
-  formContainer: { flex: 1, justifyContent: 'center' },
-  formInner: { paddingHorizontal: 24, marginTop: -20 },
+  formWrap: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingBottom: 154,
+    paddingTop: 42, 
+  },
+  formInner: { },
   field: { marginBottom: 24 },
   label: { fontSize: 14, color: '#2c4a2c', marginBottom: 8, fontWeight: '600', letterSpacing: 0.3 },
   inputContainer: {
@@ -296,6 +308,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
+    minHeight: 52,
   },
   inputContainerFocused: {
     borderColor: '#4a7c4a',
@@ -313,7 +326,7 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     borderBottomWidth: 8,
   },
-  input: { flex: 1, height: 52, color: '#2c4a2c', fontSize: 16, fontWeight: '500' },
+  input: { flex: 1, color: '#2c4a2c', fontSize: 16, fontWeight: '500', paddingVertical: 14 },
 
   /* button */
   button: {
@@ -321,7 +334,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingVertical: 16,
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 8,
     overflow: 'hidden',
     elevation: 6,
     shadowColor: '#264d00',
@@ -343,7 +356,7 @@ const styles = StyleSheet.create({
   loadingDot3: { opacity: 0.4 },
 
   /* footer */
-  footerLink: { marginTop: 30, alignItems: 'center', paddingVertical: 8 },
+  footerLink: { marginTop: 18, alignItems: 'center', paddingVertical: 8 },
   footerText: { fontSize: 15, color: '#5a6b5a', fontWeight: '400' },
   linkText: { color: '#264d00', fontWeight: 'bold', textDecorationLine: 'underline' },
 });
