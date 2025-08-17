@@ -8,77 +8,40 @@
     "scheme": "pgt",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-    "ios": {
-      "supportsTablet": true
-    },
+    "ios": { "supportsTablet": true },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/logos.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "permissions": [
-        "CAMERA"
-      ],
+      "permissions": ["CAMERA"],
       "config": {
-        "googleMaps": {
-          "apiKey": "AIzaSyCsqxf39pjTDNN4r205Kw4cfUsklevfTKI"
-        }
+        "googleMaps": { "apiKey": "AIzaSyCsqxf39pjTDNN4r205Kw4cfUsklevfTKI" }
       },
       "package": "com.vandolf123.pgt",
       "softwareKeyboardLayoutMode": "resize"
     },
-    "web": {
-      "bundler": "metro",
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
-    },
-    "updates": {
-      "fallbackToCacheTimeout": 0,
-      "checkAutomatically": "ON_ERROR_RECOVERY"
-    },
     "plugins": [
       "expo-router",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/logos.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
-        }
-      ],
-      [
-        "expo-dev-client"
-      ],
+      ["expo-splash-screen", { "image": "./assets/images/logos.png", "imageWidth": 200, "resizeMode": "contain", "backgroundColor": "#ffffff" }],
       "expo-web-browser",
       [
-    "expo-build-properties",
+        "expo-build-properties",
         {
           "android": {
             "compileSdkVersion": 35,
             "targetSdkVersion": 35,
             "minSdkVersion": 24,
-            "gradlePluginVersion": "8.8.2"
+            "buildToolsVersion": "35.0.0"
           }
         }
       ],
-      [
-        "expo-updates",
-        {
-          "enabled": true
-        }
-      ]
+      ["expo-updates", { "enabled": true }]
     ],
-    "experiments": {
-      "typedRoutes": true
-    },
-    "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "736fb176-678d-48c6-9d93-8592efa4273f"
-      }
-    },
+    "updates": { "fallbackToCacheTimeout": 0, "checkAutomatically": "ON_ERROR_RECOVERY" },
+    "experiments": { "typedRoutes": true },
+    "extra": { "router": {}, "eas": { "projectId": "736fb176-678d-48c6-9d93-8592efa4273f" } },
     "owner": "vandolf123"
   }
 }
