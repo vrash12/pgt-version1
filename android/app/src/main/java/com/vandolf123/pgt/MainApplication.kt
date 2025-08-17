@@ -1,4 +1,4 @@
-package com.justin_aldrei.pgt
+package com.vandolf123.pgt
 
 import android.app.Application
 import android.content.res.Configuration

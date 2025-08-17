@@ -123,21 +123,41 @@ const [currentTrip, setCurrentTrip] = useState<TimelineItem | null>(null);
 const [updatedStartTime, setUpdatedStartTime] = useState('');
 const [updatedEndTime, setUpdatedEndTime] = useState('');
 
-const hmToMinutes = (hm: string) => {
+function hmToMinutes(hm: string): number {
   const [h, m] = hm.split(':').map(Number);
   return h * 60 + m;
-};
+}
 
-
-const minutesToHM = (mins: number) => {
+function minutesToHM(mins: number): string {
   const m = ((mins % 1440) + 1440) % 1440; // wrap 24h
   const h = Math.floor(m / 60);
   const mm = m % 60;
-  return `${String(h).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
-};
-const minusMinutesHM = (hm: string, mins: number) => minutesToHM(hmToMinutes(hm) - mins);
-const plusMinutesHM = (hm: string, mins: number) =>
-  minutesToHM(hmToMinutes(hm) + mins);
+  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+function minusMinutesHM(hm: string, mins: number): string {
+  return minutesToHM(hmToMinutes(hm) - mins);
+}
+function plusMinutesHM(hm: string, mins: number): string {
+  return minutesToHM(hmToMinutes(hm) + mins);
+}
+function toHHMM(d: Date): string {
+  // ensure always "HH:MM" 24h, independent of device locale
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
+}
+function formatTime12Hour(hm: string): string {
+  if (!hm) return '--:--';
+  const [H, M] = hm.split(':').map(Number);
+  const period = H >= 12 ? 'PM' : 'AM';
+  const h12 = H % 12 || 12;
+  return `${h12}:${String(M).padStart(2, '0')} ${period}`;
+}
+function hmOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  const as = hmToMinutes(aStart), ae = hmToMinutes(aEnd);
+  const bs = hmToMinutes(bStart), be = hmToMinutes(bEnd);
+  return Math.max(as, bs) < Math.min(ae, be); // touching endpoints allowed
+}
 // add near other state
 const [expandedIds, setExpandedIds] = useState<Record<number, boolean>>({});
 const [activeStopKey, setActiveStopKey] = useState<string | null>(null);
@@ -296,15 +316,7 @@ const fmtStopWindow = (arr: string, dep: string) => {
   const fmtTime = (d?: Date) =>
     d ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--';
 
-  const toHHMM = (d: Date) =>
-    d.toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
-  const formatTime12Hour = (time24: string) => {
-    const [hours, minutes] = time24.split(':').map(Number);
-    const period = hours >= 12 ? 'PM' : 'AM';
-    const hours12 = hours % 12 || 12;
-    return `${hours12}:${minutes.toString().padStart(2, '0')} ${period}`;
-  };
   const previewStopEndHM = React.useMemo(() => {
     const n = parseInt(dwellMins, 10);
     if (!arrive || Number.isNaN(n) || n < 0) return '';
@@ -693,11 +705,7 @@ setAddingTrip(true);
       setAddingTrip(false);
     }
   };
-  const hmOverlap = (aStart: string, aEnd: string, bStart: string, bEnd: string) => {
-    const as = hmToMinutes(aStart), ae = hmToMinutes(aEnd);
-    const bs = hmToMinutes(bStart), be = hmToMinutes(bEnd);
-    return Math.max(as, bs) < Math.min(ae, be); // allow touching endpoints
-  };
+
   
   const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
   

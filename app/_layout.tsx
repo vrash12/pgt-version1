@@ -1,11 +1,14 @@
+// app/_layout.tsx
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Slot, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { jwtDecode } from 'jwt-decode';
 import React, { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+
+import { Ionicons } from '@expo/vector-icons';
+import { useFonts } from 'expo-font';
 
 import AnnouncementNotifier from './AnnouncementNotifier';
 
@@ -17,6 +20,10 @@ type JwtPayload = { role: AppRole; exp: number };
 export default function RootLayout() {
   const router = useRouter();
   const segments = useSegments();
+
+  // Load Ionicons font (required for icons)
+  const [fontsLoaded, fontsError] = useFonts(Ionicons.font);
+
   const [isReady, setIsReady] = useState(false);
   const [role, setRole] = useState<AppRole | null>(null);
 
@@ -26,7 +33,6 @@ export default function RootLayout() {
       try {
         const token = await AsyncStorage.getItem('@token');
 
-        // No token: allow being on auth routes, otherwise send to /signin
         if (!token) {
           const s = (segments as string[]) || [];
           if (!s.includes('signin') && !s.includes('signup')) router.replace('/signin');
@@ -37,9 +43,9 @@ export default function RootLayout() {
           return;
         }
 
-        // Decode/validate
         let payload: JwtPayload | null = null;
         try {
+          const { jwtDecode } = await import('jwt-decode');
           payload = jwtDecode<JwtPayload>(token);
         } catch {
           await AsyncStorage.clear();
@@ -62,7 +68,6 @@ export default function RootLayout() {
           return;
         }
 
-        // Valid → go to role root if not already there
         setRole(payload.role);
         const s = (segments as string[]) || [];
         if (!s.includes(payload.role)) router.replace(`/${payload.role}`);
@@ -79,15 +84,20 @@ export default function RootLayout() {
   }, [segments, router]);
 
   useEffect(() => {
-    if (isReady) SplashScreen.hideAsync().catch(() => {});
-  }, [isReady]);
+    if (fontsError) {
+      console.warn('[RootLayout] Ionicons font failed to load:', fontsError);
+    }
+    if (isReady && (fontsLoaded || fontsError)) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [isReady, fontsLoaded, fontsError]);
 
-  if (!isReady) return null;
+  // Gate UI until ready (prevents blank/hidden icons)
+  if (!isReady || (!fontsLoaded && !fontsError)) return null;
 
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      {/* Wrap Slot in a View for background styling (Fragments themselves can't take style) */}
       <View style={{ flex: 1, backgroundColor: '#fff' }}>
         {role === 'commuter' && <AnnouncementNotifier />}
         <Slot />

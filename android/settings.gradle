@@ -1,22 +1,12 @@
-// android/settings.gradle (Groovy)
-
 pluginManagement {
-  repositories {
-    gradlePluginPortal()
-    google()
-    mavenCentral()
-  }
-
-  // React Native Gradle plugin from node_modules
-  def rnPluginPath = new File(
+  def reactNativeGradlePlugin = new File(
     providers.exec {
       workingDir(rootDir)
       commandLine("node", "--print", "require.resolve('@react-native/gradle-plugin/package.json', { paths: [require.resolve('react-native/package.json')] })")
     }.standardOutput.asText.get().trim()
   ).getParentFile().absolutePath
-  includeBuild(rnPluginPath)
-
-  // Expo Gradle plugin via expo-modules-autolinking
+  includeBuild(reactNativeGradlePlugin)
+  
   def expoPluginsPath = new File(
     providers.exec {
       workingDir(rootDir)
@@ -39,14 +29,11 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
     ex.autolinkLibrariesFromCommand(expoAutolinking.rnConfigCommand)
   }
 }
-
 expoAutolinking.useExpoModules()
+
 rootProject.name = 'pgt'
 
-// Make autolinking use version catalogs (RN 0.76+ pattern)
 expoAutolinking.useExpoVersionCatalog()
 
 include ':app'
-
-// Keep RN Gradle plugin (composite build)
 includeBuild(expoAutolinking.reactNativeGradlePlugin)

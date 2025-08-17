@@ -41,34 +41,31 @@ const Dashlet = ({
 interface DashPayload {
   greeting: string;
   user_name: string;
-  recent_tickets: number; // kept for API compatibility
+  recent_tickets: number;
   unread_messages: number;
   next_trip: null | { bus: string; start: string; end: string };
-
-  // extra fields from API (not shown on minimalist UI)
   active_buses: number;
   today_trips: number;
   today_tickets: number;
   today_revenue: number;
-  last_ticket?: {
-    referenceNo: string;
-    fare: string;
-    paid: boolean;
-    date: string;
-    time: string;
-  } | null;
-  last_announcement?: {
-    message: string;
-    timestamp: string;
-    author_name: string;
-    bus_identifier: string;
-  } | null;
+  last_ticket?: { referenceNo: string; fare: string; paid: boolean; date: string; time: string } | null;
+  last_announcement?: { message: string; timestamp: string; author_name: string; bus_identifier: string } | null;
   upcoming?: Array<{ bus: string; start: string; end: string }>;
-  mini_schedules?: Array<{
-    bus: string;
-    items: Array<{ start: string; end: string; origin: string; destination: string }>;
+  mini_schedules?: Array<{ bus: string; items: Array<{ start: string; end: string; origin: string; destination: string }> }>;
+  live_now?: Array<{
+    bus_id: number; bus: string; trip_id: number;
+    type: 'trip' | 'stop'; label: string; start: string; end: string; description: string;
   }>;
+  // 👇 optional in responses
+  debug?: {
+    now_local: string;
+    today_local: string;
+    trips_today_len: number;
+    live_now_len: number;
+    first_trip_debug?: any;
+  };
 }
+
 
 export default function CommuterDashboard() {
   const insets = useSafeAreaInsets();
@@ -98,21 +95,51 @@ export default function CommuterDashboard() {
     float(bubble3, 4000, 8000);
   }, [bubble1, bubble2, bubble3]);
 
-  // Fetch dashboard payload
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const token = await AsyncStorage.getItem('@token');
       const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-      const res = await fetch(`${API_BASE_URL}/commuter/dashboard`, { headers });
+      const qs = __DEV__ ? '?debug=1' : '';
+      const res = await fetch(`${API_BASE_URL}/commuter/dashboard${qs}`, { headers });
       if (res.ok) {
-        const json: DashPayload = await res.json();
+        const json: DashPayload & { debug?: any } = await res.json();
+        if (__DEV__) {
+          // eslint-disable-next-line no-console
+          console.log('DASHBOARD PAYLOAD >>>', json);
+        }
         setData(json);
       } else {
         console.warn('Dashboard fetch failed:', res.status);
+        setData({
+          // render something instead of nothing
+          greeting: 'Hello',
+          user_name: 'Commuter',
+          recent_tickets: 0,
+          unread_messages: 0,
+          next_trip: null,
+          active_buses: 0,
+          today_trips: 0,
+          today_tickets: 0,
+          today_revenue: 0,
+          live_now: [],
+        } as DashPayload);
       }
     } catch (err) {
       console.warn('Failed to load dashboard:', err);
+      // ensure UI still renders
+      setData({
+        greeting: 'Hello',
+        user_name: 'Commuter',
+        recent_tickets: 0,
+        unread_messages: 0,
+        next_trip: null,
+        active_buses: 0,
+        today_trips: 0,
+        today_tickets: 0,
+        today_revenue: 0,
+        live_now: [],
+      } as DashPayload);
     } finally {
       setLoading(false);
     }
@@ -136,6 +163,7 @@ export default function CommuterDashboard() {
   useEffect(() => {
     load();
   }, [load]);
+
   useFocusEffect(
     useCallback(() => {
       load();
@@ -270,6 +298,85 @@ export default function CommuterDashboard() {
                 icon={<Ionicons name="receipt" size={22} color="#fff" />}
               />
             </View>
+
+            {data?.live_now && (
+              <View style={{ marginTop: 16, paddingHorizontal: 20 }}>
+                <Text style={styles.liveNowTitle}>
+                  Live now • {data.live_now.length} {data.live_now.length === 1 ? 'bus' : 'buses'}
+                </Text>
+
+                {data.live_now.length === 0 ? (
+                  <View style={styles.liveEmpty}>
+                    <Ionicons name="time-outline" size={16} color="#607D8B" />
+                    <Text style={styles.liveEmptyTxt}>No buses are live right now.</Text>
+                  </View>
+                ) : (
+                  data.live_now.map((item) => (
+                    <View
+                      key={`${item.bus_id}-${item.trip_id}-${item.start}-${item.type}`}
+                      style={styles.liveRow}
+                    >
+                      <View
+                        style={[
+                          styles.liveIcon,
+                          item.type === 'trip' ? styles.liveIconTrip : styles.liveIconStop,
+                        ]}
+                      >
+                        <Ionicons name={item.type === 'trip' ? 'bus' : 'location'} size={14} color="#fff" />
+                      </View>
+
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.liveBus}>
+                          {item.bus} <Text style={styles.liveBusId}>(ID {item.bus_id})</Text>
+                        </Text>
+                        <Text style={styles.liveDesc}>
+                          {item.description || (item.type === 'trip' ? 'In transit' : 'At stop')}
+                        </Text>
+                      </View>
+
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={styles.liveTime}>
+                          {item.start} – {item.end}
+                        </Text>
+                        <View style={[styles.livePill, item.type === 'trip' ? styles.pillTrip : styles.pillStop]}>
+                          <View style={styles.pulseDot} />
+                          <Text style={styles.livePillTxt}>
+                            {item.type === 'trip' ? 'IN TRANSIT' : 'AT STOP'}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  ))
+                )}
+{/* Debug (only show when available) */}
+{__DEV__ && (data as any)?.debug && (
+  <View
+    style={{
+      marginTop: 10,
+      backgroundColor: '#fff',
+      borderRadius: 8,
+      padding: 10,
+      borderWidth: 1,
+      borderColor: '#E8F5E8',
+    }}
+  >
+    <Text style={{ fontSize: 12, color: '#33691E', fontWeight: '700' }}>Debug</Text>
+    {(() => {
+      const dbg = (data as any).debug as NonNullable<DashPayload['debug']>;
+      return (
+        <Text style={{ fontSize: 12, color: '#455A64' }}>
+          now_local: {dbg?.now_local ?? '—'}{'\n'}
+          today_local: {dbg?.today_local ?? '—'}{'\n'}
+          trips_today_len: {dbg?.trips_today_len ?? '—'}{'\n'}
+          live_now_len: {dbg?.live_now_len ?? '—'}
+        </Text>
+      );
+    })()}
+  </View>
+)}
+
+              </View>
+            )}
           </>
         )}
       </ScrollView>
@@ -356,4 +463,55 @@ const styles = StyleSheet.create({
   tripTime: { color: '#fff', fontSize: 16, marginTop: 4 },
   seeAllBtn: { marginTop: 12, alignSelf: 'flex-end' },
   seeAllTxt: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  liveEmpty: {
+    marginTop: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#E8F5E8',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  liveEmptyTxt: { color: '#607D8B', fontSize: 12 },
+  
+  // live now list
+  liveNowTitle: { fontSize: 16, fontWeight: '700', color: '#1B5E20', marginBottom: 10 },
+  liveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#E8F5E8',
+    elevation: 1,
+  },
+  liveIcon: {
+    width: 28, height: 28, borderRadius: 14,
+    alignItems: 'center', justifyContent: 'center',
+    marginRight: 12,
+  },
+  liveIconTrip: { backgroundColor: '#4CAF50' },
+  liveIconStop: { backgroundColor: '#FF9800' },
+  liveBus: { fontSize: 14, fontWeight: '700', color: '#2E7D32' },
+  liveBusId: { fontSize: 12, color: '#558B2F' },
+  liveDesc: { fontSize: 12, color: '#607D8B', marginTop: 2 },
+  liveTime: { fontSize: 12, color: '#33691E', marginBottom: 6, fontWeight: '600' },
+  livePill: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10,
+    alignSelf: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pillTrip: { backgroundColor: '#4CAF50' },
+  pillStop: { backgroundColor: '#FF9800' },
+  livePillTxt: { color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  pulseDot: {
+    width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff',
+  },
 });

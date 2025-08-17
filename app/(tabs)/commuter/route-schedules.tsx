@@ -20,13 +20,18 @@ import {
 import { API_BASE_URL } from "../../config";
 
 
-
 type TimelineItem = {
   time: string;
   label: string;
   loc?: string;
   type: 'trip' | 'service';
+  // NEW:
+  startHM: string; // "HH:MM"
+  endHM: string;   // "HH:MM"
+  live?: boolean;
 };
+
+
 export default function RouteTimeline() {
   const [buses, setBuses] = useState<{ id: number; identifier: string }[]>([]);
   const [busId, setBusId] = useState<number | undefined>();
@@ -46,6 +51,26 @@ export default function RouteTimeline() {
   const showError = (message: string) => {
     Alert.alert('Error', message, [{ text: 'OK' }]);
   };
+
+  const hmToMins = (hm: string) => {
+    const [h, m] = hm.split(':').map(Number);
+    return h * 60 + m;
+  };
+  
+  const isNowBetween = (selDate: Date, startHM: string, endHM: string) => {
+    // Only mark live when viewing *today*
+    const isToday = selDate.toDateString() === new Date().toDateString();
+    if (!isToday) return false;
+  
+    const now = new Date();
+    const nowM = now.getHours() * 60 + now.getMinutes();
+    const s = hmToMins(startHM);
+    const e = hmToMins(endHM);
+  
+    // simple same-day window; if you have cross-midnight events adjust here
+    return s <= nowM && nowM < e;
+  };
+  
 
   // Load bus list with error handling
   useEffect(() => {
@@ -139,79 +164,102 @@ export default function RouteTimeline() {
       const ymdLocal = (d: Date) =>
         `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       const day = ymdLocal(selDate);
-
+  
       // Fetch trips with timeout
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
-
+  
       type TripRec = { id: number; number: string; start_time: string; end_time: string };
       const tripsRes = await fetch(
-       `${API_BASE_URL}/commuter/bus-trips?bus_id=${busId}&date=${day}`,
-        { 
-          headers: { Authorization: `Bearer ${tok}` },
-          signal: controller.signal
-        }
+        `${API_BASE_URL}/commuter/bus-trips?bus_id=${busId}&date=${day}`,
+        { headers: { Authorization: `Bearer ${tok}` }, signal: controller.signal }
       );
   
-      
       clearTimeout(timeoutId);
-      
+  
       if (!tripsRes.ok) {
         throw new Error(`Failed to fetch trips: ${tripsRes.statusText}`);
       }
-      
+  
       const trips: TripRec[] = await tripsRes.json();
-      const timeline: TimelineItem[] = [];
+// === Replace the whole "Process trips" block with this ===
+type EventRec = {
+  type: 'stop' | 'trip';
+  label: string;
+  start_time: string; // "HH:MM"
+  end_time: string;   // "HH:MM"
+  description: string;
+};
 
-      // Process trips
-      for (let tIdx = 0; tIdx < trips.length; tIdx++) {
-        const t = trips[tIdx];
+const timeline: TimelineItem[] = [];
 
-        type StopRec = { stop_name: string; arrive_time: string; depart_time: string };
-        const stopsRes = await fetch(
-        `${API_BASE_URL}/commuter/stop-times?trip_id=${t.id}`,
-          { headers: { Authorization: `Bearer ${tok}` } }
-        );
-        
-        if (!stopsRes.ok) continue;
-        
-        const stops: StopRec[] = await stopsRes.json();
+for (const t of trips) {
+  const evRes = await fetch(
+    `${API_BASE_URL}/commuter/schedule?trip_id=${t.id}&date=${day}`,
+    { headers: { Authorization: `Bearer ${tok}` } }
+  );
+  if (!evRes.ok) continue;
 
-        let prev: StopRec | undefined;
-        stops.forEach((st) => {
-          // Trip segment
-          if (prev && prev.depart_time !== st.arrive_time) {
-            timeline.push({
-              time: `${prev.depart_time} – ${st.arrive_time}`,
-              label: `Trip ${t.number}`,
-              loc: `${prev.stop_name} → ${st.stop_name}`,
-              type: 'trip',
-            });
-          }
+  const { events } = (await evRes.json()) as { events: EventRec[] };
 
-          // Service stop
-          if (st.arrive_time !== st.depart_time) {
-            timeline.push({
-              time: `${st.arrive_time} – ${st.depart_time}`,
-              label: 'Service Stop',
-              loc: st.stop_name,
-              type: 'service',
-            });
-          }
+  // chronological per trip just in case
+  events.sort((a, b) => a.start_time.localeCompare(b.start_time));
 
-          prev = st;
-        });
-      }
+  // Synthesize a pre segment if trip starts before first event
+  const firstStart = events[0]?.start_time;
+  if (firstStart && t.start_time < firstStart) {
+    const live = isNowBetween(selDate, t.start_time, firstStart);
+    timeline.push({
+      time: `${t.start_time} – ${firstStart}`,
+      label: `Trip ${t.number}`,
+      loc: '',
+      type: 'trip',
+      startHM: t.start_time,
+      endHM: firstStart,
+      live,
+    });
+  }
 
-      setItems(timeline);
-      
+  // Server events
+  for (const ev of events) {
+    const isTrip = ev.type === 'trip';
+    const live = isNowBetween(selDate, ev.start_time, ev.end_time);
+    timeline.push({
+      time: `${ev.start_time} – ${ev.end_time}`,
+      label: isTrip ? `Trip ${t.number}` : 'Service Stop',
+      loc: ev.description,
+      type: isTrip ? 'trip' : 'service',
+      startHM: ev.start_time,
+      endHM: ev.end_time,
+      live,
+    });
+  }
+
+  // Synthesize a post segment if trip ends after last event
+  const lastEnd = events[events.length - 1]?.end_time;
+  if (lastEnd && lastEnd < t.end_time) {
+    const live = isNowBetween(selDate, lastEnd, t.end_time);
+    timeline.push({
+      time: `${lastEnd} – ${t.end_time}`,
+      label: `Trip ${t.number}`,
+      loc: '',
+      type: 'trip',
+      startHM: lastEnd,
+      endHM: t.end_time,
+      live,
+    });
+  }
+}
+
+// Global chronological sort across ALL trips
+timeline.sort((a, b) => a.startHM.localeCompare(b.startHM));
+
+setItems(timeline);
+
+
+  
       // Animate fade in
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 500,
-        useNativeDriver: true,
-      }).start();
-
+      Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
     } catch (err: any) {
       console.error('❌ timeline build failed', err);
       if (err.name === 'AbortError') {
@@ -224,10 +272,35 @@ export default function RouteTimeline() {
       setLoading(false);
     }
   };
+  
 
   // Get selected bus name
   const selectedBus = buses.find(b => b.id === busId);
-
+  const LivePill = ({ text }: { text: string }) => {
+    const pulse = React.useRef(new Animated.Value(0)).current;
+  
+    React.useEffect(() => {
+      const loop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+          Animated.timing(pulse, { toValue: 0, duration: 900, useNativeDriver: true }),
+        ])
+      );
+      loop.start();
+      return () => loop.stop();
+    }, []);
+  
+    const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.2] });
+    const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] });
+  
+    return (
+      <View style={styles.liveBadge}>
+        <Animated.View style={[styles.liveDot, { transform: [{ scale }], opacity }]} />
+        <Text style={styles.liveText}>{text}</Text>
+      </View>
+    );
+  };
+  
   // Render timeline item with enhanced styling
   const renderTimelineItem = ({ item, index }: { item: TimelineItem; index: number }) => (
     <Animated.View 
@@ -252,20 +325,25 @@ export default function RouteTimeline() {
       
       {/* Content */}
       <View style={styles.timelineContent}>
-        <View style={styles.timeHeader}>
-          <Text style={styles.timeText}>{item.time}</Text>
-          <View style={[
-            styles.typeBadge,
-            item.type === 'trip' ? styles.tripBadge : styles.serviceBadge
-          ]}>
-            <Ionicons 
-              name={item.type === 'trip' ? 'bus' : 'location'} 
-              size={12} 
-              color="#fff" 
-            />
-            <Text style={styles.badgeText}>{item.type === 'trip' ? 'TRIP' : 'STOP'}</Text>
-          </View>
-        </View>
+      <View style={styles.timeHeader}>
+  <Text style={styles.timeText}>{item.time}</Text>
+  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+    {/* existing TRIP/STOP badge */}
+    <View style={[
+      styles.typeBadge,
+      item.type === 'trip' ? styles.tripBadge : styles.serviceBadge
+    ]}>
+      <Ionicons name={item.type === 'trip' ? 'bus' : 'location'} size={12} color="#fff" />
+      <Text style={styles.badgeText}>{item.type === 'trip' ? 'TRIP' : 'STOP'}</Text>
+    </View>
+
+    {/* NEW live pill */}
+    {item.live && (
+      <LivePill text={item.type === 'trip' ? 'IN TRANSIT' : 'AT STOP'} />
+    )}
+  </View>
+</View>
+
         
         <Text style={styles.eventLabel}>{item.label}</Text>
         {item.loc && (
@@ -492,6 +570,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
   },
+  liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: '#E91E63', // will show as a pink-ish “live” pill
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#fff',
+    marginRight: 6,
+  },
+  liveText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  
   dateIconContainer: {
     backgroundColor: '#fff',
     padding: 8,
