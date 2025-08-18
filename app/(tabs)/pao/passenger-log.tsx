@@ -779,6 +779,7 @@ emptyContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 20,
+    paddingTop: 40,
     backgroundColor: COLORS.primary,
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,

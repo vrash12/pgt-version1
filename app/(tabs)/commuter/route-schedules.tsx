@@ -191,73 +191,52 @@ type EventRec = {
   description: string;
 };
 
+// ---- SUPER SIMPLE TIMELINE: TRIP + ALL RAW STOPS ----
 const timeline: TimelineItem[] = [];
 
 for (const t of trips) {
-  const evRes = await fetch(
-    `${API_BASE_URL}/commuter/schedule?trip_id=${t.id}&date=${day}`,
+  // 1) always show the trip window
+  timeline.push({
+    time: `${t.start_time} – ${t.end_time}`,
+    label: `Trip ${t.number}`,
+    loc: '',
+    type: 'trip',
+    startHM: t.start_time,
+    endHM: t.end_time,
+    live: isNowBetween(selDate, t.start_time, t.end_time),
+  });
+
+  // 2) fetch raw stops and list them verbatim
+  const stopsRes = await fetch(
+    `${API_BASE_URL}/commuter/stop-times?trip_id=${t.id}`,
     { headers: { Authorization: `Bearer ${tok}` } }
   );
-  if (!evRes.ok) continue;
+  if (!stopsRes.ok) continue;
 
-  const { events } = (await evRes.json()) as { events: EventRec[] };
+  type StopRec = { stop_name: string; arrive_time: string; depart_time: string };
+  const stops: StopRec[] = await stopsRes.json();
 
-  // chronological per trip just in case
-  events.sort((a, b) => a.start_time.localeCompare(b.start_time));
+  for (const s of stops) {
+    // minimal fallback so we always render a time range
+    const start = (s.arrive_time || s.depart_time || t.start_time).slice(0, 5);
+    const end   = (s.depart_time || s.arrive_time || t.end_time).slice(0, 5);
 
-  // Synthesize a pre segment if trip starts before first event
-  const firstStart = events[0]?.start_time;
-  if (firstStart && t.start_time < firstStart) {
-    const live = isNowBetween(selDate, t.start_time, firstStart);
     timeline.push({
-      time: `${t.start_time} – ${firstStart}`,
-      label: `Trip ${t.number}`,
-      loc: '',
-      type: 'trip',
-      startHM: t.start_time,
-      endHM: firstStart,
-      live,
-    });
-  }
-
-  // Server events
-  for (const ev of events) {
-    const isTrip = ev.type === 'trip';
-    const live = isNowBetween(selDate, ev.start_time, ev.end_time);
-    timeline.push({
-      time: `${ev.start_time} – ${ev.end_time}`,
-      label: isTrip ? `Trip ${t.number}` : 'Service Stop',
-      loc: ev.description,
-      type: isTrip ? 'trip' : 'service',
-      startHM: ev.start_time,
-      endHM: ev.end_time,
-      live,
-    });
-  }
-
-  // Synthesize a post segment if trip ends after last event
-  const lastEnd = events[events.length - 1]?.end_time;
-  if (lastEnd && lastEnd < t.end_time) {
-    const live = isNowBetween(selDate, lastEnd, t.end_time);
-    timeline.push({
-      time: `${lastEnd} – ${t.end_time}`,
-      label: `Trip ${t.number}`,
-      loc: '',
-      type: 'trip',
-      startHM: lastEnd,
-      endHM: t.end_time,
-      live,
+      time: `${start} – ${end}`,
+      label: 'Stop',
+      loc: s.stop_name,
+      type: 'service',              // <- shows orange "STOP" badge in your UI
+      startHM: start,
+      endHM: end,
+      live: isNowBetween(selDate, start, end),
     });
   }
 }
 
-// Global chronological sort across ALL trips
+// sort everything by start time and set
 timeline.sort((a, b) => a.startHM.localeCompare(b.startHM));
-
 setItems(timeline);
 
-
-  
       // Animate fade in
       Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
     } catch (err: any) {

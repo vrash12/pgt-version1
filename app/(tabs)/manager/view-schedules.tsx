@@ -552,7 +552,7 @@ const fetchSchedule = async (busOverride?: number, dateOverride?: Date) => {
 </Text>
               {/* Stops */}
               {detailsTrip.stops && detailsTrip.stops.length > 0 ? (
-                <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingVertical: 8 }}>
+                <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingVertical: 12 }}>
                   {uniqStops(detailsTrip.stops).map((s, i, arr) => {
                     const last = i === arr.length - 1;
                     return (

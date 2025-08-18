@@ -25,6 +25,9 @@ import { API_BASE_URL } from '../../config';
 
 const { width } = Dimensions.get('window');
 
+import { useIsFocused } from '@react-navigation/native';
+import { DeviceEventEmitter } from 'react-native';
+
 type Announcement = {
   id: number;
   message: string;
@@ -121,6 +124,26 @@ export default function NotificationsScreen() {
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
 
+  const isFocused = useIsFocused();
+
+  const markAllSeen = async (latestTs?: string) => {
+    try {
+      const ms = latestTs ? parseServerDate(latestTs).getTime() : Date.now();
+      await AsyncStorage.setItem('@lastSeenAnnouncementTs', String(ms));
+      DeviceEventEmitter.emit('announcements:seen', ms); // tell tab bar to clear badge instantly
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (!isFocused) return;
+    const newest = announcements[0]?.timestamp;
+    markAllSeen(newest);
+  }, [isFocused, announcements]);
+  
+  // OPTIONAL: let the poller know not to toast when this screen is in front
+  useEffect(() => {
+    AsyncStorage.setItem('@ann:screenFocused', isFocused ? '1' : '0').catch(() => {});
+  }, [isFocused]);
   // Derive socket origin from API_BASE_URL
   const SOCKET_ORIGIN = useMemo(() => {
     try {

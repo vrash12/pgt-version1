@@ -771,42 +771,58 @@ def schedule():
     trip = Trip.query.get_or_404(trip_id)
     stops = (
         StopTime.query.filter_by(trip_id=trip_id)
-        .order_by(StopTime.seq.asc(), StopTime.id.asc())
+        .order_by(StopTime.seq.asc(), StopTime.id.asc())   # stable ordering
         .all()
     )
 
-    events: List[Dict[str, Any]] = []
-    # If we don't have at least 2 stops, synthesize one in-transit segment
-    if len(stops) < 2:
+    def fmt(t):
+        tt = _as_time(t)
+        return tt.strftime("%H:%M") if tt else ""
+
+    events = []
+
+    if len(stops) == 0:
+        # no stop data at all → whole window is in-transit
         events.append({
             "id": 1,
             "type": "trip",
             "label": "In Transit",
-            "start_time": _as_time(trip.start_time).strftime("%H:%M") if _as_time(trip.start_time) else "",
-            "end_time": _as_time(trip.end_time).strftime("%H:%M") if _as_time(trip.end_time) else "",
+            "start_time": fmt(trip.start_time),
+            "end_time":   fmt(trip.end_time),
             "description": "",
         })
     else:
+        # always include stop windows (even if only one)
         for idx, st in enumerate(stops):
-            events.append({
-                "id": idx * 2 + 1,
-                "type": "stop",
-                "label": "At Stop",
-                "start_time": _as_time(st.arrive_time).strftime("%H:%M") if _as_time(st.arrive_time) else "",
-                "end_time": _as_time(st.depart_time).strftime("%H:%M") if _as_time(st.depart_time) else "",
-                "description": st.stop_name,
-            })
+            s = _as_time(st.arrive_time) or _as_time(st.depart_time)
+            e = _as_time(st.depart_time) or _as_time(st.arrive_time)
+            if s or e:  # skip truly empty rows
+                events.append({
+                    "id": idx * 2 + 1,
+                    "type": "stop",
+                    "label": "At Stop",
+                    "start_time": fmt(s),
+                    "end_time":   fmt(e),
+                    "description": st.stop_name,
+                })
+
+            # transit segment to next stop (only when both ends exist)
             if idx < len(stops) - 1:
                 nxt = stops[idx + 1]
-                events.append({
-                    "id": idx * 2 + 2,
-                    "type": "trip",
-                    "label": "In Transit",
-                    "start_time": _as_time(st.depart_time).strftime("%H:%M") if _as_time(st.depart_time) else "",
-                    "end_time": _as_time(nxt.arrive_time).strftime("%H:%M") if _as_time(nxt.arrive_time) else "",
-                    "description": f"{st.stop_name} → {nxt.stop_name}",
-                })
+                s2 = _as_time(st.depart_time) or _as_time(st.arrive_time)
+                e2 = _as_time(nxt.arrive_time) or _as_time(nxt.depart_time)
+                if s2 and e2 and s2 != e2:
+                    events.append({
+                        "id": idx * 2 + 2,
+                        "type": "trip",
+                        "label": "In Transit",
+                        "start_time": fmt(s2),
+                        "end_time":   fmt(e2),
+                        "description": f"{st.stop_name} → {nxt.stop_name}",
+                    })
+
     return jsonify(events=events), 200
+
 
 
 @commuter_bp.route("/announcements", methods=["GET"])

@@ -8,16 +8,16 @@ import React, { useEffect, useRef, useState, type ComponentProps } from 'react';
 import type { PressableProps } from 'react-native';
 import {
   Animated,
+  DeviceEventEmitter,
   Platform,
   Pressable,
   SafeAreaView,
   StyleSheet,
   Vibration,
-  View,
+  View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_BASE_URL } from '../../config';
-
 export const BASE_TABBAR_HEIGHT = Platform.OS === 'ios' ? 74 : 78;
 
 /* ───────── Visible routes ───────── */
@@ -522,7 +522,13 @@ export default function CommuterTabLayout() {
   const BAR_H = (Platform.OS === 'ios' ? 74 : 78) + insets.bottom;
 
   const [notifUnread, setNotifUnread] = useState(false);
-
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('announcements:seen', () => {
+      setNotifUnread(false); // instant clear
+    });
+    return () => sub.remove();
+  }, []);
+  
   const iconFor = (route: (typeof VISIBLE)[number]) =>
     ({ focused }: { focused: boolean }) => (
       <MagneticCommuterIcon
@@ -618,7 +624,19 @@ export default function CommuterTabLayout() {
         <Tabs.Screen name="dashboard"       options={{ tabBarIcon: iconFor('dashboard') }} />
         <Tabs.Screen name="route-schedules" options={{ tabBarIcon: iconFor('route-schedules') }} />
         <Tabs.Screen name="live-locations"  options={{ tabBarIcon: iconFor('live-locations') }} />
-        <Tabs.Screen name="notifications"   options={{ tabBarIcon: iconFor('notifications') }} />
+        <Tabs.Screen
+  name="notifications"
+  options={{ tabBarIcon: iconFor('notifications') }}
+  listeners={{
+    tabPress: async () => {
+      try {
+        await AsyncStorage.setItem('@lastSeenAnnouncementTs', String(Date.now()));
+      } catch {}
+      setNotifUnread(false); // instant
+    },
+  }}
+/>
+
         <Tabs.Screen name="my-receipts"     options={{ tabBarIcon: iconFor('my-receipts') }} />
         {/* hidden routes */}
         <Tabs.Screen name="receipt/[id]" options={{ href: null }} />

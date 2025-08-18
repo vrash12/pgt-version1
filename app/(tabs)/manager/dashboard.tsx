@@ -61,7 +61,7 @@ export default function ManagerDashboard() {
   const [activeBuses,  setActiveBuses]  = useState<number | null>(null);
   const [ticketsToday, setTicketsToday] = useState<number | null>(null);
   const [paidToday,    setPaidToday]    = useState<number | null>(null);
-  const [unpaidToday,  setUnpaidToday]  = useState<number | null>(null);
+
   const [revenueToday, setRevenueToday] = useState<number | null>(null);
   const [last7,        setLast7]        = useState<DailyRow[] | null>(null);
   const [loading,      setLoading]      = useState(true);
@@ -85,7 +85,7 @@ export default function ManagerDashboard() {
           const revenue = list.filter((t) => t.paid).reduce((s, t) => s + parseFloat(t.fare), 0);
           setTicketsToday(list.length);
           setPaidToday(paid);
-          setUnpaidToday(list.length - paid);
+      
           setRevenueToday(revenue);
         }
 
@@ -236,7 +236,7 @@ export default function ManagerDashboard() {
             <KpiCard icon="bus"                label="Active"  value={activeBuses} />
             <KpiCard icon="ticket-confirmation" lib="Material" label="Tickets" value={ticketsToday} />
             <KpiCard icon="cash"               label="Paid ₱"  value={revenueToday?.toFixed(2)} />
-            <KpiCard icon="exclamation-circle" lib="FA5" color="#C62828" label="Unpaid" value={unpaidToday} />
+     
           </View>
 
           {/* TREND TABLE */}
@@ -330,8 +330,8 @@ const st = StyleSheet.create<{
 
   /* header — mirrors Commuter header; allow bubbles to flow inside */
   header: {
-    paddingTop: 20,
-    paddingBottom: 56,
+    paddingTop: 40,
+    paddingBottom: 26,
     paddingHorizontal: 20,
     position: "relative",
     overflow: "hidden",

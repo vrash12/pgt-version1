@@ -27,8 +27,24 @@ import { useNotifications } from '../../lib/NotificationContext';
 import { BASE_TABBAR_HEIGHT } from './_layout';
 type Coord = { latitude: number; longitude: number };
 
-// Your user location extends Coord with quality info
-type UserLoc = Coord & { accuracy: number; speedKmh: number };
+type UserLoc = Coord & { accuracy: number; speedKmh: number; heading: number | null };
+
+// --- accuracy + bearing helpers ---
+const ACC_ACCEPT = 35;   // ≤ 35 m = use + remember as last-good
+const ACC_REJECT = 120;  // ≥ 120 m = drop fix if we have a last-good
+
+const toRad = (x: number) => (x * Math.PI) / 180;
+const toDeg = (x: number) => (x * 180) / Math.PI;
+
+/** Initial bearing (degrees 0..360) from a -> b */
+const bearingDeg = (a: Coord, b: Coord) => {
+  const φ1 = toRad(a.latitude), φ2 = toRad(b.latitude);
+  const λ1 = toRad(a.longitude), λ2 = toRad(b.longitude);
+  const y = Math.sin(λ2 - λ1) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.cos(φ2) * Math.cos(λ2 - λ1) - Math.sin(φ1) * Math.sin(φ2);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+};
+
 
 interface BusFix  { id: string; lat: number; lng: number; people: number; }
 const MQTT_URL            = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
@@ -73,19 +89,22 @@ export default function LiveLocationScreen() {
       Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
     return 2 * R * Math.asin(Math.sqrt(h));
   };
-  
+  const lastGoodRef = useRef<UserLoc | null>(null);
+const smoothRef   = useRef<Coord | null>(null);
 
 // Track last position+time and movement streak
 const lastPosRef = useRef<{ loc: UserLoc; ts: number } | null>(null);
 const moveStreakRef = useRef(0);
 const shareStartRef = useRef<number | null>(null);
 
-// thresholds tuned for vehicles
-const SPEED_KMH_THRESHOLD = 10;    // ✅ your requirement
-const DISTANCE_M_THRESHOLD = 60;   // need ~60 m of real movement
-const MOVING_STREAK_REQUIRED = 4;  // 4 consecutive updates ≈ ~30s+
-const ACC_FILTER_MAX = 80;         // ignore fixes worse than 80 m
-const ACC_FUDGE = 20;              // dead-band in meters
+// thresholds tuned for real vehicles with phone GPS jitter
+const SPEED_KMH_THRESHOLD = 10;   // moving if ≥ 10 km/h
+const DISTANCE_M_THRESHOLD = 50;  // OR if hop distance ≥ 50 m
+const MOVING_STREAK_REQUIRED = 3; // for ~10–12s at 3s cadence
+const ACC_GOOD = 50;              // only trust movement if accuracy ≤ 50 m
+
+const speedEMARef = useRef(0);    // exponential smoothing for speed
+
 
 ExpoNotify.setNotificationHandler({
   handleNotification: async () => ({
@@ -96,23 +115,36 @@ ExpoNotify.setNotificationHandler({
     shouldShowList: true,
   }),
 });
+
+const ARRIVAL_RADIUS_M = 80;   // notify when bus enters this radius
+const EXIT_RADIUS_M    = 120;  // hysteresis to reset "arrival" state
+
+type EtaStatus = 'ETA' | 'ARRIVING' | 'HERE';
+
+const busHistRef = useRef<Record<string, {
+  ts: number;
+  coord: Coord;
+  speedKmh: number;
+}>>({});
+
+const [etaStatus, setEtaStatus] = useState<EtaStatus>('ETA');
+const arrivalNotifiedRef = useRef<string | null>(null);
+const inArrivalZoneRef   = useRef(false);
+
 const autoStopOnMove = async () => {
   setIsSharing(false);
   setRemaining(10);
   setAckTime(null);
+  shareStartRef.current = null;          // 👈 clear
+  setLockedBusId(null);                   // 👈 unlock bus
   publishStop(selectedId!);
   await clearShareNotification();
   addNotice('Live Location Closed', 'Stopped because you started moving.');
   await ExpoNotify.scheduleNotificationAsync({
-    content: {
-      title: 'Live location closed',
-      body: "You're on the move, so sharing has been stopped.",
-      sound: 'default',
-    },
+    content: { title: 'Live location closed', body: "You're on the move, so sharing has been stopped.", sound: 'default' },
     trigger: null,
   });
 };
-
 
   const [userId, setUserId] = useState<string | null>(null);
   const [fixes, setFixes] = useState<Record<string, BusFix>>({});
@@ -124,10 +156,22 @@ const autoStopOnMove = async () => {
   const [isSharing, setIsSharing] = useState(false);
   const [remaining, setRemaining] = useState(10);
   const [ackTime, setAckTime] = useState<Date | null>(null);
+  const [roadRoute, setRoadRoute] = useState<Coord[]>([]);
+const [roadDistanceKm, setRoadDistanceKm] = useState<number | null>(null);
   // after: const [ackTime, setAckTime] = useState<Date | null>(null);
 const [lockedBusId, setLockedBusId] = useState<string | null>(null);
 const lockedBusIdRef = useRef<string | null>(null);
 useEffect(() => { lockedBusIdRef.current = lockedBusId; }, [lockedBusId]);
+// publish commuter location
+useEffect(() => {
+  if (!mqttRef.current || !userId || !userLoc || !selectedId || !isSharing) return; // 👈 gate by isSharing
+  const topic = tPaoUp(selectedId);
+  const payload = JSON.stringify({ type: 'location', id: userId, lat: userLoc.latitude, lng: userLoc.longitude });
+  const push = () => mqttRef.current!.publish(topic, payload);
+  push();
+  const intervalId = setInterval(push, 10000);
+  return () => clearInterval(intervalId);
+}, [userLoc, userId, selectedId, isSharing]);
 
   const windowH = Dimensions.get('window').height;
 
@@ -196,40 +240,46 @@ const clearShareNotification = async () => {
 useEffect(() => {
   if (!userLoc) return;
 
-  // ignore very poor fixes outright
-  if (userLoc.accuracy > ACC_FILTER_MAX) return;
-
+  // Always compute; don't early-return on accuracy — we gate below with ACC_GOOD
   const now = Date.now();
   const last = lastPosRef.current;
+
   if (last) {
     const dtSec = Math.max(1, (now - last.ts) / 1000);
 
-    const dKm = haversineKm(
-      { latitude: last.loc.latitude, longitude: last.loc.longitude },
-      { latitude: userLoc.latitude, longitude: userLoc.longitude }
-    );
+    const dKm =
+      haversineKm(
+        { latitude: last.loc.latitude, longitude: last.loc.longitude },
+        { latitude: userLoc.latitude,  longitude: userLoc.longitude }
+      );
+
     const dMetersRaw = dKm * 1000;
 
-    // subtract both accuracies + a small fudge band
-    const accEnvelope = (last.loc.accuracy || 0) + (userLoc.accuracy || 0) + ACC_FUDGE;
-    const dMeters = Math.max(0, dMetersRaw - accEnvelope);
+    // Be less punitive: subtract only the worse of the two accuracies (not sum) + small fudge
+    const accWorst = Math.max(last.loc.accuracy || 0, userLoc.accuracy || 0);
+    const dMeters  = Math.max(0, dMetersRaw - (accWorst + 10)); // 10 m fudge band
 
-    // use whichever is higher: reported speed or derived speed
+    // Use whichever is higher: reported speed or derived speed
     const derivedSpeedKmh = (dKm / (dtSec / 3600));
-    const speedKmh = Math.max(userLoc.speedKmh, derivedSpeedKmh);
+    const instantSpeedKmh = Math.max(userLoc.speedKmh, derivedSpeedKmh);
 
-    const speedOK = speedKmh >= SPEED_KMH_THRESHOLD;
-    const distanceOK = dMeters >= DISTANCE_M_THRESHOLD;
+    // Smooth speed to avoid spikes
+    const alpha = 0.3; // smoothing factor
+    const prevEMA = speedEMARef.current || 0;
+    const speedEMA = alpha * instantSpeedKmh + (1 - alpha) * prevEMA;
+    speedEMARef.current = speedEMA;
 
-    const inShareGrace = !!shareStartRef.current && (now - shareStartRef.current) < 10_000; // 10s
+    const inShareGrace = !!shareStartRef.current && (now - shareStartRef.current) < 5_000; // 5s grace
+    const accOK = userLoc.accuracy <= ACC_GOOD;
 
-    // 🚦 final decision: must be *both* fast and far enough
-    const moving = !inShareGrace && speedOK && distanceOK;
+    // ✅ Easier rule: moving if (good accuracy) AND (speed high OR distance big enough)
+    const moving = !inShareGrace && accOK &&
+                   (speedEMA >= SPEED_KMH_THRESHOLD || dMeters >= DISTANCE_M_THRESHOLD);
 
     if (moving) {
       moveStreakRef.current += 1;
       if (isSharing && moveStreakRef.current >= MOVING_STREAK_REQUIRED) {
-        autoStopOnMove(); // your existing closer
+        autoStopOnMove();
       }
     } else {
       moveStreakRef.current = 0;
@@ -303,15 +353,34 @@ useEffect(() => {
     let msg: any;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
 
-    // --- Telemetry feed: device/<busId>/telemetry ---
     if (topic.includes('/telemetry')) {
       const [, deviceIdRaw] = topic.split('/'); // ['device','bus-01','telemetry']
       const deviceId = toTopicId(deviceIdRaw);
       const { lat, lng, people = 0 } = msg;
+    
+      // store latest fix
       setFixes(f => ({ ...f, [deviceId]: { id: deviceId, lat, lng, people } }));
       setSelectedId(prev => prev ?? deviceId);
+    
+      // estimate + smooth speed for this bus (km/h)
+      const now = Date.now();
+      const prev = busHistRef.current[deviceId];
+      let smKmh = prev?.speedKmh ?? 24; // fallback cruise 24 km/h
+      if (prev) {
+        const dtHr = Math.max(0.001, (now - prev.ts) / 3_600_000); // hours
+        const dKm  = haversineKm(prev.coord, { latitude: lat, longitude: lng });
+        const inst = dKm / dtHr;               // instantaneous km/h
+        const alpha = 0.3;                     // smoothing factor
+        smKmh = alpha * inst + (1 - alpha) * smKmh;
+      }
+      busHistRef.current[deviceId] = {
+        ts: now,
+        coord: { latitude: lat, longitude: lng },
+        speedKmh: smKmh,
+      };
       return;
     }
+    
 
     // --- ACKs: commuter/<busId>/livestream/ack ---
     if (topic.startsWith('commuter/') && topic.endsWith('/livestream/ack')) {
@@ -362,77 +431,151 @@ useEffect(() => {
     return () => { if (client.connected) client.unsubscribe(ackTopic); };
   }, [selectedId]);
 
-  // load user + location
-  useEffect(() => {
-    AsyncStorage.getItem('@preferredBusId').then(stored => stored && setSelectedId(toTopicId(stored)));
-    AsyncStorage.getItem('@userId').then(id => id && setUserId(id));
+// load user + location
+useEffect(() => {
+  AsyncStorage.getItem('@preferredBusId').then(stored => stored && setSelectedId(toTopicId(stored)));
+  AsyncStorage.getItem('@userId').then(id => id && setUserId(id));
 
-    let sub: Location.LocationSubscription | undefined;
-    (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
-        sub = await Location.watchPositionAsync(
-          {
-            accuracy: Platform.OS === 'android'
-              ? Location.Accuracy.Balanced
-              : Location.Accuracy.High,
-            timeInterval: 7000,
-            distanceInterval: 12,
-            mayShowUserSettingsDialog: true,
-          },
-          loc => {
-            // Expo types: number | null -> coerce to numbers
-            const rawAcc   = loc.coords.accuracy;
-            const rawSpeed = loc.coords.speed; // m/s or null
-        
-            const accuracy = typeof rawAcc === 'number' && Number.isFinite(rawAcc) ? rawAcc : 999;
-            const speedKmh = typeof rawSpeed === 'number' && Number.isFinite(rawSpeed)
-              ? rawSpeed * 3.6
-              : 0;
-        
+  let sub: Location.LocationSubscription | undefined;
+  (async () => {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status === 'granted') {
+      // Prefer the highest accuracy available on the device
+      const desiredAcc =
+      
+        (Location.Accuracy as any).BestForNavigation ??
+        Location.Accuracy.Highest ??
+        Location.Accuracy.High;
+
+      sub = await Location.watchPositionAsync(
+        {
+          accuracy: desiredAcc,
+          timeInterval: 2000,         // faster cadence
+          distanceInterval: 1,        // tighter threshold
+          // iOS-specific: tell the OS we care about nav-like motion
+          // @ts-expect-error older SDKs may not have ActivityType
+          activityType: (Location.ActivityType as any)?.AutomotiveNavigation ?? undefined,
+          mayShowUserSettingsDialog: true,
+        },
+        loc => {
+          const rawAcc   = loc.coords.accuracy;
+          const rawSpeed = loc.coords.speed; // m/s or null
+          const raw: Coord = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+
+          const accuracy = typeof rawAcc === 'number' && Number.isFinite(rawAcc) ? rawAcc : 999;
+          const speedKmh = typeof rawSpeed === 'number' && Number.isFinite(rawSpeed) ? rawSpeed * 3.6 : 0;
+
+          // Drop very poor fixes if we already have a last-good
+          if (accuracy >= ACC_REJECT && lastGoodRef.current) return;
+
+          // Smooth the coordinate to suppress GPS jitter (EMA on lat/lng)
+          const alpha = 0.25; // heavier smoothing = calmer marker
+          const base  = smoothRef.current ?? raw;
+          const smooth: Coord = {
+            latitude:  base.latitude  + (raw.latitude  - base.latitude)  * alpha,
+            longitude: base.longitude + (raw.longitude - base.longitude) * alpha,
+          };
+          smoothRef.current = smooth;
+
+          // Prefer sensor heading; if unavailable, derive from last position delta
+          let heading: number | null = (typeof loc.coords.heading === 'number' && loc.coords.heading >= 0)
+            ? loc.coords.heading
+            : null;
+          if (heading == null && lastPosRef.current) {
+            heading = bearingDeg(lastPosRef.current.loc, { latitude: raw.latitude, longitude: raw.longitude });
+          }
+
+          const nextFix: UserLoc = { ...smooth, accuracy, speedKmh, heading };
+
+          // Accept all good/ok fixes; otherwise keep last known precise point
+          if (accuracy <= ACC_ACCEPT || !lastGoodRef.current) {
+            lastGoodRef.current = nextFix;
+            setUserLoc(nextFix);
+          } else {
+            const lastGood = lastGoodRef.current;
             setUserLoc({
-              latitude:  loc.coords.latitude,
-              longitude: loc.coords.longitude,
+              latitude:  lastGood.latitude,
+              longitude: lastGood.longitude,
               accuracy,
               speedKmh,
+              heading,
             });
           }
-        );
-        
-      }
-      setLoading(false);
-    })();
-    return () => sub?.remove();
-  }, []);
+        }
+      );
+    }
+    setLoading(false);
+  })();
 
-  // publish commuter location
-  useEffect(() => {
-    if (!mqttRef.current || !userId || !userLoc || !selectedId) return;
-    const topic = tPaoUp(selectedId);
-    const payload = JSON.stringify({ type: 'location', id: userId, lat: userLoc.latitude, lng: userLoc.longitude });
-    const push = () => mqttRef.current!.publish(topic, payload);
-    push();
-    const intervalId = setInterval(push, 10000);
-    return () => clearInterval(intervalId);
-  }, [userLoc, userId, selectedId]);
+  return () => sub?.remove();
+}, []);
 
-  // route + ETA
-  useEffect(() => {
-    const activeFix = selectedId ? fixes[selectedId] : undefined;
-    if (!activeFix || !userLoc) return;
-    const route = [{ latitude: activeFix.lat, longitude: activeFix.lng }, userLoc];
-    setRouteCoords(route);
+// route + ETA + arrival notification
+useEffect(() => {
+  const activeFix = selectedId ? fixes[selectedId] : undefined;
+  if (!activeFix || !userLoc) return;
 
-    const dLat = activeFix.lat - userLoc.latitude;
-    const dLng = activeFix.lng - userLoc.longitude;
-    const distanceKm = Math.sqrt(dLat * dLat + dLng * dLng) * 111;
-    setEtaMinutes(Math.max(1, Math.round(distanceKm / 0.4)));
+  const route: Coord[] = [
+    { latitude: activeFix.lat, longitude: activeFix.lng },
+    { latitude: userLoc.latitude, longitude: userLoc.longitude },
+  ];
+  setRouteCoords(route);
 
-    mapRef.current?.fitToCoordinates(route, {
-      edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
-      animated: true,
-    });
-  }, [fixes, selectedId, userLoc]);
+  // distance
+  const distanceKm = haversineKm(
+    { latitude: activeFix.lat, longitude: activeFix.lng },
+    { latitude: userLoc.latitude, longitude: userLoc.longitude }
+  );
+  const distM = distanceKm * 1000;
+
+  // dynamic ETA from smoothed bus speed (fallback to 24 km/h, min 1 min)
+  const spd = Math.max(5, busHistRef.current[activeFix.id]?.speedKmh ?? 24); // clamp very low speeds
+  let status: EtaStatus = 'ETA';
+  let mins = Math.max(1, Math.round(distanceKm / (spd / 60))); // minutes
+
+  if (distM <= 25) {              // right at the stop
+    status = 'HERE';
+    mins = 0;
+  } else if (distM <= ARRIVAL_RADIUS_M) {
+    status = 'ARRIVING';
+    mins = 0;                     // render “<1”
+  }
+
+  setEtaStatus(status);
+  setEtaMinutes(mins);
+
+  // arrival one-shot notification with hysteresis (80m in, 120m out)
+  const entering = distM <= ARRIVAL_RADIUS_M && !inArrivalZoneRef.current;
+  const exiting  = distM >= EXIT_RADIUS_M && inArrivalZoneRef.current;
+
+  if (entering) {
+    inArrivalZoneRef.current = true;
+    if (arrivalNotifiedRef.current !== activeFix.id) {
+      arrivalNotifiedRef.current = activeFix.id;
+      addNotice('Bus nearby', `${activeFix.id.toUpperCase()} is ~${Math.round(distM)} m away`);
+      ExpoNotify.scheduleNotificationAsync({
+        content: {
+          title: '🚍 Your bus is nearby',
+          body: `${activeFix.id.toUpperCase()} is ~${Math.round(distM)} m away.`,
+          sound: 'default',
+          ...(Platform.OS === 'android' ? { channelId: 'commuter-acks' } : {}),
+        },
+        trigger: null,
+      });
+    }
+  } else if (exiting) {
+    inArrivalZoneRef.current = false;
+    if (arrivalNotifiedRef.current === activeFix.id) {
+      arrivalNotifiedRef.current = null;
+    }
+  }
+
+  // keep view framed
+  mapRef.current?.fitToCoordinates(route, {
+    edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
+    animated: true,
+  });
+}, [fixes, selectedId, userLoc]);
 
   // countdown
   useEffect(() => {
@@ -481,15 +624,20 @@ useEffect(() => {
   const closeShare = () =>
     Alert.alert('Close Live Location', 'Stop sharing your live location?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Stop', style: 'destructive',
+      {
+        text: 'Stop',
+        style: 'destructive',
         onPress: () => {
           setIsSharing(false);
           setRemaining(10);
           setAckTime(null);
+          shareStartRef.current = null;    // 👈 clear here too
+          setLockedBusId(null);            // 👈 unlock
           publishStop(selectedId!);
           addNotice('Live Location Closed', 'Sharing has been stopped.');
-        }
-         }
+          clearShareNotification();
+        },
+      },
     ]);
 
   const activeFix = selectedId ? fixes[selectedId] : undefined;
@@ -517,7 +665,7 @@ useEffect(() => {
       <StatusBar barStyle="light-content" backgroundColor="#1B5E20" />
 
       {/* FIX 1: remove double top safe-area. Keep a small constant top pad. */}
-      <View style={[styles.header, { paddingTop: 12 }]}>
+      <View style={[styles.header, { paddingTop: 42 }]}>
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>🚍 Live Tracking</Text>
           <Text style={styles.headerSubtitle}>Real-time bus locations</Text>
@@ -529,7 +677,7 @@ useEffect(() => {
         contentContainerStyle={{
           flexGrow: 1,
           // FIX 2: ensure content clears the absolute tab bar + leave extra room for the action panel
-          paddingBottom: TAB_H + 10,
+          paddingBottom: TAB_H + 23,
         }}
         showsVerticalScrollIndicator={false}
         contentInsetAdjustmentBehavior="always"
@@ -618,14 +766,25 @@ useEffect(() => {
                 </Marker>
               ))}
 
-              {userLoc && (
-                <Marker coordinate={userLoc}>
-                  <View style={styles.userMarker}>
-                    <View style={styles.userMarkerRing} />
-                    <View style={styles.userDot} />
-                  </View>
-                </Marker>
-              )}
+{userLoc && (
+  <Marker coordinate={userLoc} anchor={{ x: 0.5, y: 0.5 }}>
+    <Animated.View
+      style={[
+        styles.userIconWrap,
+        { transform: [{ rotate: `${userLoc.heading ?? 0}deg` }] },
+      ]}
+    >
+      {/* Direction pointer */}
+      <Ionicons name="navigate" size={20} color="#1B5E20" />
+    </Animated.View>
+
+    {/* User glyph centered under the pointer */}
+    <View style={styles.userGlyphWrap}>
+      <Ionicons name="person" size={18} color="#fff" />
+    </View>
+  </Marker>
+)}
+
             </MapView>
 
             {/* overlays */}
@@ -637,20 +796,38 @@ useEffect(() => {
               </View>
 
               <View style={styles.etaCard}>
-                <View style={styles.etaHeader}>
-                  <Ionicons name="time" size={18} color="#fff" />
-                  <Text style={styles.etaHeaderText}>ETA</Text>
-                </View>
-                <Text style={styles.etaTime}>{etaMinutes}</Text>
-                <Text style={styles.etaUnit}>{etaMinutes === 1 ? 'min' : 'mins'}</Text>
-              </View>
+  <View style={styles.etaHeader}>
+    <Ionicons name="time" size={18} color="#fff" />
+    <Text style={styles.etaHeaderText}>
+      {etaStatus === 'HERE' ? 'ARRIVED' : etaStatus === 'ARRIVING' ? 'NEARBY' : 'ETA'}
+    </Text>
+  </View>
+
+  {etaStatus === 'HERE' ? (
+    <>
+      <Text style={styles.etaTime}>Here</Text>
+      <Text style={styles.etaUnit}>Look for the bus</Text>
+    </>
+  ) : etaStatus === 'ARRIVING' ? (
+    <>
+      <Text style={styles.etaTime}>{'<1'}</Text>
+      <Text style={styles.etaUnit}>min</Text>
+    </>
+  ) : (
+    <>
+      <Text style={styles.etaTime}>{etaMinutes}</Text>
+      <Text style={styles.etaUnit}>{etaMinutes === 1 ? 'min' : 'mins'}</Text>
+    </>
+  )}
+</View>
+
             </View>
           </View>
         </View>
 
         {/* Action Panel */}
         {!isSharing ? (
-          <View style={[styles.actionPanel, { marginBottom: TAB_H + 12 }]}>
+     <View style={[styles.actionPanel]}>
             <View style={styles.durationSection}>
               <Text style={styles.sectionTitle}>Share Duration</Text>
               <View style={styles.durationCard}>
@@ -678,7 +855,7 @@ useEffect(() => {
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={[styles.actionPanel, { marginBottom: TAB_H + 12 }]}>
+          <View style={[styles.actionPanel]}>
             <TouchableOpacity style={styles.closeButton} onPress={closeShare}>
               <Ionicons name="close-circle" size={24} color="#fff" />
               <View style={styles.closeButtonContent}>
@@ -712,7 +889,7 @@ useEffect(() => {
             )}
           </View>
         )}
-        <View style={{ height: TAB_H + 24 }} />
+   
       </ScrollView>
 
       {/* inactivity modal */}
@@ -769,7 +946,37 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#fff', textAlign: 'center' },
   headerSubtitle: { fontSize: 14, color: 'rgba(255,255,255,0.8)', textAlign: 'center', marginTop: 2 },
   headerSpacer: { width: 56 },
-
+  userIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#E8F5E8',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+  },
+  userGlyphWrap: {
+    position: 'absolute',
+    top: 16,           // slightly below the pointer
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#2E7D32',
+    borderWidth: 2,
+    borderColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+  },
+  
   // Fleet Selector
   fleetContainer: { padding: 20, paddingBottom: 12 },
   fleetLabel: { fontSize: 18, fontWeight: '600', color: '#1B5E20', marginBottom: 12 },

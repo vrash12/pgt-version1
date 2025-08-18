@@ -28,6 +28,33 @@ from utils.push import send_push  # ← safe wrapper for push
 pao_bp = Blueprint("pao", __name__, url_prefix="/pao")
 
 
+@pao_bp.route("/reset-live-stats", methods=["POST"])
+@require_role("pao")
+def reset_live_stats():
+    """
+    Ask the device to zero its live passenger counters.
+    This does NOT modify database rows; it only triggers the sensor to publish fresh totals.
+    Device must subscribe to: device/<bus-identifier>/control
+    Payload: {"cmd": "reset_people"}
+    """
+    bus_id = _current_bus_id()
+    if not bus_id:
+        return jsonify(error="PAO has no assigned bus"), 400
+
+    bus_row = Bus.query.get(bus_id)
+    bus_identifier = (bus_row.identifier or f"bus-{bus_id:02d}") if bus_row else f"bus-{bus_id:02d}"
+
+    topic = f"device/{bus_identifier}/cmd/reset"
+    try:
+        publish(topic, {"reset": True})
+        current_app.logger.info(f"[PAO] reset request → {topic}")
+        # 202 to indicate it's async (device will apply and then publish /people)
+        return jsonify(ok=True), 202
+    except Exception as e:
+        current_app.logger.exception("reset-live-stats publish failed")
+        return jsonify(error=str(e)), 500
+
+
 @pao_bp.route("/summary", methods=["GET"])
 @require_role("pao")
 def pao_summary():

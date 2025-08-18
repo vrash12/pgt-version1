@@ -23,12 +23,15 @@ type Receipt = {
   time: string;
   origin: string;
   destination: string;
-  passengerType?: 'Regular' | 'Discount';
+  passengerType?: 'Regular' | 'Discount' | 'regular' | 'discount';
   commuter?: string;
   fare: string;
+  /** string payload to encode into QR */
   qr?: string;
+  /** direct image URL of server-rendered QR (preferred if present) */
+  qr_link?: string;
+  /** legacy/alt field name (if your API ever returns it) */
   qr_url?: string;
-  qr_link?: string; // in case your API returns this
   paid: boolean;
 };
 
@@ -101,6 +104,18 @@ export default function ReceiptDetail() {
     );
   }
 
+  // Normalize passenger type for display
+  const passengerType =
+    receipt.passengerType
+      ? receipt.passengerType[0].toUpperCase() + receipt.passengerType.slice(1).toLowerCase()
+      : '—';
+
+  // Decide how to render the QR:
+  // 1) If server gave us an image URL (qr_link or qr_url) ⇒ show it as <Image />.
+  // 2) Else if we have a QR payload (qr) ⇒ render a QR from that payload.
+  const qrImgUrl = receipt.qr_link || receipt.qr_url || '';
+  const qrPayload = receipt.qr || '';
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar backgroundColor="#5a7c65" barStyle="light-content" />
@@ -149,7 +164,7 @@ export default function ReceiptDetail() {
 
               <View style={styles.detailBlock}>
                 <Text style={styles.detailLabel}>Type of Commuter</Text>
-                <Text style={styles.detailValue}>{receipt.passengerType ?? '—'}</Text>
+                <Text style={styles.detailValue}>{passengerType}</Text>
               </View>
 
               <View style={[styles.detailBlock, styles.commuterRow]}>
@@ -171,33 +186,27 @@ export default function ReceiptDetail() {
 
               <View style={styles.qrSection}>
                 <View style={styles.qrContainer}>
-                  {(() => {
-                    const qrValue = (receipt as any).qr_link ?? receipt.qr ?? '';
-                    if (qrValue) {
-                      return (
-                        <QRCode
-                          value={qrValue}
-                          size={120}
-                          backgroundColor="white"
-                          color="#2d5016"
-                        />
-                      );
-                    }
-                    if (receipt.qr_url) {
-                      return (
-                        <Image
-                          source={{ uri: receipt.qr_url }}
-                          style={styles.qrImage}
-                          resizeMode="contain"
-                        />
-                      );
-                    }
-                    return (
-                      <View style={styles.qrPlaceholder}>
-                        <Ionicons name="qr-code" size={60} color="#a8b5a1" />
-                      </View>
-                    );
-                  })()}
+                  {qrImgUrl ? (
+                    // ✅ Prefer the server-rendered image of the ticket QR
+                    <Image
+                      source={{ uri: qrImgUrl }}
+                      style={styles.qrImage}
+                      resizeMode="contain"
+                    />
+                  ) : qrPayload ? (
+                    // ✅ Fallback: generate QR from the payload string
+                    <QRCode
+                      value={qrPayload}
+                      size={140}
+                      backgroundColor="white"
+                      color="#2d5016"
+                    />
+                  ) : (
+                    // Final fallback
+                    <View style={styles.qrPlaceholder}>
+                      <Ionicons name="qr-code" size={60} color="#a8b5a1" />
+                    </View>
+                  )}
                 </View>
               </View>
             </View>
@@ -214,11 +223,10 @@ const styles = StyleSheet.create({
   background: { flex: 1, backgroundColor: '#5a7c65' },
   center: { alignItems: 'center', justifyContent: 'center' },
 
-  // Moved padding here so scrolling always works
   scrollContainer: {
     paddingHorizontal: 20,
     paddingVertical: 30,
-    paddingBottom: 40, // extra space at bottom
+    paddingBottom: 40,
   },
 
   receiptCard: {
@@ -233,7 +241,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
 
-  /* header */
   header: {
     backgroundColor: '#f8faf9',
     paddingVertical: 20,
@@ -257,7 +264,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
 
-  /* perforated divider */
   perforatedDivider: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -288,7 +294,6 @@ const styles = StyleSheet.create({
     marginRight: -10,
   },
 
-  /* content */
   content: { paddingHorizontal: 24, paddingVertical: 24 },
   detailRow: { flexDirection: 'row', marginBottom: 20, gap: 16 },
   detailCol: { flex: 1 },
@@ -313,7 +318,6 @@ const styles = StyleSheet.create({
   totalLabel: { fontSize: 14, fontWeight: '600', color: '#6b7c6b' },
   totalValue: { fontSize: 22, fontWeight: '900', color: '#2d5016', letterSpacing: -0.5 },
 
-  /* QR code */
   qrSection: { alignItems: 'center', marginTop: 24 },
   qrContainer: {
     backgroundColor: '#f8faf9',
@@ -325,10 +329,10 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
-  qrImage: { width: 120, height: 120, borderRadius: 8 },
+  qrImage: { width: 140, height: 140, borderRadius: 8 },
   qrPlaceholder: {
-    width: 120,
-    height: 120,
+    width: 140,
+    height: 140,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#f0f4f0',

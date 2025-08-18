@@ -539,15 +539,7 @@ if (prev?.depart_time && st.arrive_time) {
             <Text style={styles.statLabel}>Service Stops</Text>
           </View>
           
-          {isToday && (
-            <View style={[styles.statCard, styles.activeStatCard]}>
-              <View style={[styles.statIconContainer, styles.activeStatIcon]}>
-                <Ionicons name="radio-button-on" size={20} color="#fff" />
-              </View>
-              <Text style={[styles.statNumber, { color: '#4CAF50' }]}>{activeEvents}</Text>
-              <Text style={styles.statLabel}>Active Now</Text>
-            </View>
-          )}
+    
         </Animated.View>
       )}
 

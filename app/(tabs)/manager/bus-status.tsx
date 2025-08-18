@@ -1,4 +1,5 @@
 //app/(tabs)/manager/bus-status.tsx
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import dayjs from 'dayjs';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -19,7 +20,7 @@ import {
 import MapView, { Marker } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_BASE_URL } from "../../config";
-   
+
    /* ── constants ───────────────────────────────────────────────────── */
 
    const MQTT_BROKER_URL  = 'wss://35010b9ea10d41c0be8ac5e9a700a957.s1.eu.hivemq.cloud:8884/mqtt';
@@ -332,7 +333,11 @@ const run = async () => {
      /* ── render ──────────────────────────────────────────────────── */
      return (
        <LinearGradient colors={['#059669', '#047857', '#065F46']} style={styles.container}>
-         <SafeAreaView style={styles.safeArea}>
+         <SafeAreaView  style={[
+    styles.safeArea,
+    { paddingTop: Math.max(insets.top, Platform.OS === 'android' ? 24 : 12) } // 👈 add this
+  ]}
+>
            {/* header */}
            <View style={styles.header}>
              <View style={styles.headerContent}>
@@ -411,21 +416,28 @@ const run = async () => {
         longitudeDelta: 0.01,
       }}
     >
-      {visible
-        .filter(bs => Number.isFinite(bs.lat) && Number.isFinite(bs.lng))
-        .map(bs => (
-          <Marker
-            key={bs.id}
-            pinColor={bs.id === selectedId ? '#10B981' : '#059669'}
-            coordinate={{ latitude: bs.lat, longitude: bs.lng }}
-            title={bs.id.toUpperCase()}
-            description={`${bs.passengers} passengers • ${bs.paid} paid`}
-          />
-        ))}
+  {visible
+  .filter(bs => Number.isFinite(bs.lat) && Number.isFinite(bs.lng))
+  .map(bs => (
+    <Marker
+      key={bs.id}
+      coordinate={{ latitude: bs.lat, longitude: bs.lng }}
+      title={bs.id.toUpperCase()}
+      description={`${bs.passengers} passengers • ${bs.paid} paid`}
+    >
+      <View style={[
+        styles.busMarker,
+        bs.id === selectedId && styles.busMarkerActive,
+      ]}>
+        <Ionicons name="bus" size={20} color="#fff" />
+      </View>
+    </Marker>
+))}
+
     </MapView>
 
     {/* top controls */}
-    <View style={styles.fullscreenTopBar}>
+    <View style={[styles.fullscreenTopBar, { top: insets.top + 8 }]}>
       <TouchableOpacity style={styles.fullscreenBtn} onPress={() => setFullMap(false)}>
         <Text style={styles.fullscreenBtnTxt}>⤡  Close map</Text>
       </TouchableOpacity>
@@ -560,18 +572,23 @@ const run = async () => {
           }}
           onPress={() => setFullMap(true)}  // 👈 tap anywhere to expand
         >
-          {buses
-            .filter(bs => Number.isFinite(bs.lat) && Number.isFinite(bs.lng))
-            .map(bs => (
-              <Marker
-                key={bs.id}
-                pinColor={bs.id === selectedId ? '#10B981' : '#059669'}
-                coordinate={{ latitude: bs.lat, longitude: bs.lng }}
-                title={bs.id.toUpperCase()}
-                description={`${bs.passengers} passengers • ${bs.paid} paid`}
-                onPress={() => setSelectedId(bs.id as DeviceId)}
-              />
-            ))}
+    {buses
+  .filter(bs => Number.isFinite(bs.lat) && Number.isFinite(bs.lng))
+  .map(bs => (
+    <Marker
+      key={bs.id}
+      coordinate={{ latitude: bs.lat, longitude: bs.lng }}
+      onPress={() => setSelectedId(bs.id as DeviceId)}
+    >
+      <View style={[
+        styles.busMarker,
+        bs.id === selectedId && styles.busMarkerActive,
+      ]}>
+        <Ionicons name="bus" size={20} color="#fff" />
+      </View>
+    </Marker>
+))}
+
         </MapView>
   
         {/* small overlay count */}
@@ -781,6 +798,26 @@ const run = async () => {
    
    /* ───────── styles (unchanged from your previous file) ─────────── */
    const styles = StyleSheet.create({
+    busMarker: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      backgroundColor: '#059669',
+      justifyContent: 'center',
+      alignItems: 'center',
+      borderWidth: 2,
+      borderColor: '#fff',
+      elevation: 6,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 4,
+    },
+    busMarkerActive: {
+      backgroundColor: '#10B981',
+      borderColor: '#FFD700', // highlight when selected
+    },
+    
      container: { flex: 1 },
      safeArea: { flex: 1, paddingHorizontal: 16 },
    

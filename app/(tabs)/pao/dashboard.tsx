@@ -91,7 +91,46 @@ export default function PaoDashboard() {
   const bubble1 = useRef(new Animated.Value(0)).current;
   const bubble2 = useRef(new Animated.Value(0)).current;
   const bubble3 = useRef(new Animated.Value(0)).current;
-
+  const handleReset = async () => {
+    if (!busId) {
+      Alert.alert('Reset', 'No assigned bus.');
+      return;
+    }
+  
+    Alert.alert('Reset', `Reset live passenger counters for ${busId.toUpperCase()}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Yes, Reset',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            // 1) Try MQTT control first (fastest path; device resets its own counters)
+            if (mqttRef.current?.connected) {
+              const resetTopic = `device/${busId}/cmd/reset`;
+               mqttRef.current.publish(
+                 resetTopic,
+                 'reset',                    // any payload containing "reset" is accepted by ESP
+                 { qos: 1, retain: false }
+               );
+            } else {
+              // 2) Fallback to backend (it will publish the same MQTT control message)
+              const token = await AsyncStorage.getItem('@token');
+              await fetch(`${API_BASE_URL}/pao/reset-live-stats`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+              });
+            }
+  
+            // Optimistic UI: clear local counters; device will publish fresh /people next
+            setStats({ inside: 0, entries: 0, exits: 0 });
+            Alert.alert('Reset requested', 'Waiting for fresh sensor reading…');
+          } catch (e) {
+            Alert.alert('Reset failed', String(e));
+          }
+        },
+      },
+    ]);
+  };
   useEffect(() => {
     const float = (v: Animated.Value, delay = 0, duration = 7000) =>
       Animated.loop(
@@ -339,6 +378,9 @@ export default function PaoDashboard() {
             <TouchableOpacity onPress={logout} style={styles.logoutBtn}>
               <Ionicons name="log-out-outline" size={28} color="#fff" />
             </TouchableOpacity>
+            <TouchableOpacity onPress={handleReset} style={styles.resetBtn}>
+  <Ionicons name="refresh" size={26} color="#fff" />
+</TouchableOpacity>
           </View>
 
           {busId && (
@@ -487,6 +529,7 @@ function KpiBox({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8faf9' },
+  resetBtn: { padding: 4, marginLeft: 8 },
 
   header: { paddingTop: 36, paddingBottom: 28, paddingHorizontal: 20, overflow: 'hidden', borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
 

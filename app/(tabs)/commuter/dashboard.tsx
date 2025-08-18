@@ -56,14 +56,7 @@ interface DashPayload {
     bus_id: number; bus: string; trip_id: number;
     type: 'trip' | 'stop'; label: string; start: string; end: string; description: string;
   }>;
-  // 👇 optional in responses
-  debug?: {
-    now_local: string;
-    today_local: string;
-    trips_today_len: number;
-    live_now_len: number;
-    first_trip_debug?: any;
-  };
+
 }
 
 
@@ -348,32 +341,7 @@ export default function CommuterDashboard() {
                     </View>
                   ))
                 )}
-{/* Debug (only show when available) */}
-{__DEV__ && (data as any)?.debug && (
-  <View
-    style={{
-      marginTop: 10,
-      backgroundColor: '#fff',
-      borderRadius: 8,
-      padding: 10,
-      borderWidth: 1,
-      borderColor: '#E8F5E8',
-    }}
-  >
-    <Text style={{ fontSize: 12, color: '#33691E', fontWeight: '700' }}>Debug</Text>
-    {(() => {
-      const dbg = (data as any).debug as NonNullable<DashPayload['debug']>;
-      return (
-        <Text style={{ fontSize: 12, color: '#455A64' }}>
-          now_local: {dbg?.now_local ?? '—'}{'\n'}
-          today_local: {dbg?.today_local ?? '—'}{'\n'}
-          trips_today_len: {dbg?.trips_today_len ?? '—'}{'\n'}
-          live_now_len: {dbg?.live_now_len ?? '—'}
-        </Text>
-      );
-    })()}
-  </View>
-)}
+
 
               </View>
             )}

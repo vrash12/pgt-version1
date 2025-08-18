@@ -2,19 +2,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
-    Alert,
-    Animated,
-    Dimensions,
-    Image,
-    Linking,
-    Platform,
-    SafeAreaView,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  Alert,
+  Animated,
+  Dimensions,
+  Image,
+  Linking,
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 
 const { width } = Dimensions.get('window');
@@ -263,23 +263,7 @@ export default function GCashGuide() {
             <Ionicons name="arrow-forward" size={20} color="#fff" />
           </TouchableOpacity>
 
-          <View style={styles.secondaryActions}>
-            <TouchableOpacity 
-              style={styles.secondaryButton}
-              onPress={() => router.push('/commuter/my-receipts')}
-            >
-              <Ionicons name="receipt-outline" size={20} color="#2E7D32" />
-              <Text style={styles.secondaryButtonText}>My Receipts</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={styles.secondaryButton}
-              onPress={() => Alert.alert('Help', 'For assistance, please contact our support team.')}
-            >
-              <Ionicons name="help-circle-outline" size={20} color="#2E7D32" />
-              <Text style={styles.secondaryButtonText}>Need Help?</Text>
-            </TouchableOpacity>
-          </View>
+       
         </View>
       </ScrollView>
     </SafeAreaView>

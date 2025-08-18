@@ -37,7 +37,7 @@ export default function AnnouncementScreen() {
   const tabBarH = useBottomTabBarHeight();
 
 
-  const TAB_BAR_H = Math.max(0, tabBarH - 6); 
+  const TAB_BAR_H = Math.max(0, tabBarH - 30); 
 
   const flatRef = useRef<FlatList<Ann & { _showDate?: boolean }>>(null);
   const [composerH, setComposerH] = useState(0);
@@ -196,26 +196,49 @@ export default function AnnouncementScreen() {
     },
   ]}
 >
-          <View style={styles.composerShadow}>
-            <View style={styles.composer}
-            onLayout={e => setComposerH(e.nativeEvent.layout.height)}>
-              <TextInput
-                style={styles.textInput}
-                placeholder="Share an announcement..."
-                placeholderTextColor="#9E9E9E"
-                value={draft}
-                onChangeText={setDraft}
-                multiline
-              />
-              <TouchableOpacity
-                onPress={handleSend}
-                style={[styles.sendButton, { opacity: draft.trim() ? 1 : 0.5 }]}
-                disabled={!draft.trim()}
-              >
-                <Ionicons name="send" size={20} color="#fff" />
-              </TouchableOpacity>
-            </View>
-          </View>
+<View
+  pointerEvents="box-none"
+  style={[
+    styles.composerWrap,
+    { bottom: kbVisible ? kbHeight : TAB_BAR_H },
+  ]}
+>
+  <View style={styles.composerShadow}>
+    <View
+      style={styles.composer}
+      onLayout={e => setComposerH(e.nativeEvent.layout.height)}
+    >
+      <View style={styles.composerLeading}>
+        <Ionicons name="megaphone-outline" size={18} color="#2E7D32" />
+      </View>
+
+      <TextInput
+        style={styles.textInput}
+        placeholder="Share an announcement..."
+        placeholderTextColor="#9E9E9E"
+        value={draft}
+        onChangeText={setDraft}
+        multiline
+      />
+
+      <View style={styles.composerActions}>
+        <View style={styles.composerDivider} />
+        <TouchableOpacity
+          onPress={handleSend}
+          activeOpacity={0.9}
+          style={[
+            styles.sendButton,
+            draft.trim() ? styles.sendButtonEnabled : styles.sendButtonDisabled,
+          ]}
+          disabled={!draft.trim()}
+        >
+          <Ionicons name="send" size={20} color="#fff" />
+        </TouchableOpacity>
+      </View>
+    </View>
+  </View>
+</View>
+
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -287,38 +310,83 @@ const styles = StyleSheet.create({
         zIndex: 100,      // ensure it sits above the list
         elevation: 6,     // Android visual stacking
       },
-  composerShadow: {
-    backgroundColor: '#fff',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#E8F5E8',
-  },
-  composer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    backgroundColor: '#f5f5f5',
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-  },
-  textInput: {
-    flex: 1,
-    fontSize: 16,
-    color: '#333',
-    maxHeight: 100,
-    paddingVertical: 0,
-    textAlignVertical: 'top',
-  },
-  sendButton: {
-    backgroundColor: '#2E7D32',
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 8,
-  },
+      composerShadow: {
+        backgroundColor: '#fff',
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderTopWidth: 1,
+        borderTopColor: '#E8F5E8',
+      },
+      
+      composer: {
+        flexDirection: 'row',
+        alignItems: 'flex-end',
+        backgroundColor: '#FFFFFF',
+        borderRadius: 24,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderWidth: 1,
+        borderColor: '#E8F5E8',
+        // subtle lift
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+        elevation: 3,
+      },
+      
+      composerLeading: {
+        width: 34,
+        height: 34,
+        borderRadius: 17,
+        backgroundColor: '#E8F5E8',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: 10,
+      },
+      
+      textInput: {
+        flex: 1,
+        fontSize: 16,
+        color: '#333',
+        maxHeight: 120,
+        paddingVertical: 6,
+        textAlignVertical: 'top',
+      },
+      
+      composerActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginLeft: 8,
+      },
+      
+      composerDivider: {
+        width: 1,
+        height: 28,
+        backgroundColor: '#E0E0E0',
+        marginRight: 8,
+      },
+      
+      sendButton: {
+        width: 46,
+        height: 46,
+        borderRadius: 23,
+        alignItems: 'center',
+        justifyContent: 'center',
+        // little pop
+        shadowColor: '#2E7D32',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.15,
+        shadowRadius: 10,
+        elevation: 4,
+      },
+      
+      sendButtonEnabled: {
+        backgroundColor: '#2E7D32',
+      },
+      
+      sendButtonDisabled: {
+        backgroundColor: '#A5D6A7',
+      },
+      
 });
